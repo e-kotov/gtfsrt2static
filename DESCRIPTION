@@ -1,0 +1,35 @@
+Type: Package
+Package: gtfsrt2static
+Title: Realized Static GTFS Snapshots from GTFS-Realtime and GPS-Derived
+    Observations
+Version: 0.0.0.9000
+Authors@R: 
+    person("Egor", "Kotov", , "kotov.egor@gmail.com", role = c("aut", "cre", "cph"),
+           comment = c(ORCID = "0000-0001-6690-5345"))
+Description: Converts archived GTFS-Realtime feeds ('Trip Updates',
+    'Vehicle Positions') and GPS-derived observations into
+    standard-compliant static GTFS snapshots that describe public transit
+    service as actually operated. Provides a canonical observed-stop-events
+    table that both input paths converge on, an assembler that merges
+    observations into a baseline static feed or scaffolds a compliant feed
+    from scratch, and a lightweight collector for continuously archiving
+    ephemeral GTFS-Realtime endpoints.
+License: MIT + file LICENSE
+Depends:
+    R (>= 4.2)
+Imports:
+    curl,
+    data.table,
+    gtfsio,
+    utils
+Suggests:
+    gps2gtfs,
+    gtfsrealtime,
+    gtfstools,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+URL: https://github.com/e-kotov/gtfsrt2static
+BugReports: https://github.com/e-kotov/gtfsrt2static/issues
