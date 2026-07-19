@@ -4,7 +4,16 @@
 \alias{snapshot_assemble}
 \title{Assemble a Realized GTFS Feed from Observed Stop Events}
 \usage{
-snapshot_assemble(events, baseline = NULL, service_date = NULL, tz = NULL, ...)
+snapshot_assemble(
+  events,
+  baseline = NULL,
+  service_date = NULL,
+  tz = NULL,
+  feed_lang = "en",
+  feed_contact_email = NULL,
+  feed_contact_url = NULL,
+  ...
+)
 }
 \arguments{
 \item{events}{Observed stop events (see \link{observed-stop-events}).}
@@ -19,9 +28,15 @@ feed per service day in baseline mode). Defaults to the single date in
 \item{tz}{Timezone for GTFS clock strings. Defaults to the baseline's
 \code{agency_timezone} (baseline mode) or "UTC".}
 
+\item{feed_lang}{Primary feed language written to
+\code{feed_info.feed_lang} in both modes. Default \code{"en"}.}
+
+\item{feed_contact_email, feed_contact_url}{Optional recommended
+\code{feed_info.txt} contact fields, written only when supplied.}
+
 \item{...}{In scaffold mode (no baseline), passed to
 \code{\link{snapshot_scaffold}} (\code{agency}, \code{stops},
-\code{route_type}, \code{shapes}).}
+\code{route_type}, \code{shapes}, \code{strict}).}
 }
 \value{
 A gtfsio-convention feed object (class \code{gtfs}); write it with

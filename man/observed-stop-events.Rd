@@ -15,6 +15,10 @@ Columns:
 \item{trip_ref}{Trip identity. The GTFS-RT/baseline \code{trip_id} when
 known, a synthetic id for inferred trips. Never NA.}
 \item{route_ref}{Route identity, NA when unknown.}
+\item{shape_ref}{Shape identity linking the trip to \code{shapes.txt},
+NA when unknown. Set by \code{snapshot_from_stop_times(shape_ref_prefix=)}
+to match the ids produced by \code{gps2gtfs::g2g_shapes_from_trips()};
+the assembler writes it to \code{trips.shape_id}.}
 \item{direction_id}{GTFS direction (0/1), NA when unknown.}
 \item{service_date}{\code{Date}. The service day the trip belongs to
 (attributed by trip start; post-midnight stops keep their trip's

@@ -12,7 +12,11 @@ snapshot_from_trip_updates(updates, baseline = NULL, tz = "UTC")
 update with \code{trip_id}, \code{stop_id} and/or \code{stop_sequence},
 \code{arrival_time}/\code{arrival_delay},
 \code{departure_time}/\code{departure_delay}, schedule relationships,
-\code{start_date}, \code{vehicle_id}, \code{file_timestamp}.}
+\code{start_date}, \code{vehicle_id}, \code{file_timestamp}. When
+\code{trip_id} is absent (some producers, e.g. HSL, identify trips only by
+the GTFS-RT TripDescriptor), a stable identity is synthesized from
+\code{route_id}, \code{direction_id}, \code{start_date}, and
+\code{start_time} so predictions still group per operated trip.}
 
 \item{baseline}{Optional baseline static GTFS feed (object or zip path).
 Required to resolve delay-only updates (a delay without an absolute

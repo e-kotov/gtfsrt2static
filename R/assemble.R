@@ -21,10 +21,25 @@
 #'   are filled).
 #' @param route_type GTFS route type for scaffolded routes. Default 3 (bus).
 #' @param shapes Optional \code{shapes.txt}-shaped table (e.g. from
-#'   \code{gps2gtfs::g2g_shapes_from_trips()}); included verbatim.
+#'   \code{gps2gtfs::g2g_shapes_from_trips()}). Linked to trips via
+#'   \code{trips.shape_id} when the events carry a matching \code{shape_ref}
+#'   (see \code{snapshot_from_stop_times(shape_ref_prefix=)}); shapes not
+#'   referenced by any trip are dropped, and references without matching
+#'   geometry warn (or error under \code{strict}).
 #' @param tz Timezone of the service days; used to derive GTFS clock strings
 #'   (with >24:00:00) from absolute event times. Defaults to
 #'   \code{agency$timezone}, else "UTC".
+#' @param feed_lang Primary language of the feed, written to
+#'   \code{feed_info.feed_lang} (spec-required in feed_info.txt). Default
+#'   \code{"en"}.
+#' @param feed_contact_email,feed_contact_url Optional recommended
+#'   \code{feed_info.txt} contact fields. Written only when supplied.
+#' @param strict Logical. When \code{TRUE}, conditions that would yield a
+#'   non-publishable feed - placeholder agency metadata or stops missing
+#'   spec-required coordinates - raise an error instead of a warning. Use it
+#'   as a publish gate: a scaffold that returns under \code{strict = TRUE}
+#'   has no known spec-required gaps introduced by scaffolding (it is not a
+#'   substitute for full GTFS validation). Default \code{FALSE}.
 #' @return A gtfsio-convention feed object (class \code{gtfs}, named list of
 #'   data.tables) - write it with \code{gtfsio::export_gtfs()}.
 #' @export
@@ -34,16 +49,37 @@ snapshot_scaffold <- function(
   stops = NULL,
   route_type = 3L,
   shapes = NULL,
-  tz = NULL
+  tz = NULL,
+  feed_lang = "en",
+  feed_contact_email = NULL,
+  feed_contact_url = NULL,
+  strict = FALSE
 ) {
   events <- validate_events(events)
 
+  # Publish blockers: conditions that make the feed non-spec-compliant. They
+  # are recorded on the returned object (attr "publishable" / "publish_blockers")
+  # so a downstream publish step can check them programmatically instead of
+  # relying on a human reading warnings. In strict mode any of them is an error.
+  blockers <- character(0)
+  emit <- function(..., blocker = NULL) {
+    if (!is.null(blocker)) {
+      blockers[[length(blockers) + 1L]] <<- blocker
+    }
+    if (isTRUE(strict)) {
+      stop(..., call. = FALSE)
+    } else {
+      warning(..., call. = FALSE)
+    }
+  }
+
   if (is.null(agency) || is.null(agency$name)) {
-    warning(
+    emit(
       "No agency metadata supplied; agency.txt gets placeholder values. ",
       "Pass agency = list(name=, url=, timezone=) - these spec-required ",
       "fields are not derivable from GTFS-RT.",
-      call. = FALSE
+      if (isTRUE(strict)) " (strict mode)" else "",
+      blocker = "agency.txt has placeholder values (name/url/timezone not supplied)"
     )
   }
   agency_name <- if (!is.null(agency$name)) agency$name else "Unknown agency (placeholder)"
@@ -66,7 +102,9 @@ snapshot_scaffold <- function(
   }
 
   # --- trips & services -----------------------------------------------------
-  trips_key <- unique(served[, .(trip_ref, service_date, route_ref, direction_id)])
+  trips_key <- unique(served[, .(
+    trip_ref, service_date, route_ref, direction_id, shape_ref
+  )])
   recurring <- trips_key[, .N, by = trip_ref][N > 1L, trip_ref]
   trips_key[, trip_id := ifelse(
     trip_ref %in% recurring,
@@ -142,12 +180,16 @@ snapshot_scaffold <- function(
   }
   missing_stops <- setdiff(stop_ids, sdt$stop_id)
   if (length(missing_stops) > 0L) {
-    warning(
+    emit(
       length(missing_stops),
       " stop(s) have no coordinates (spec-required stop_lat/stop_lon are ",
       "NA). Supply 'stops' - e.g. estimated from Vehicle Positions with ",
       "gps2gtfs::g2g_stops_from_positions() - before publishing.",
-      call. = FALSE
+      if (isTRUE(strict)) " (strict mode)" else "",
+      blocker = paste0(
+        length(missing_stops),
+        " stop(s) missing spec-required coordinates"
+      )
     )
     sdt <- rbind(
       sdt,
@@ -162,6 +204,46 @@ snapshot_scaffold <- function(
   stops_out <- sdt[stop_id %in% stop_ids]
   data.table::setkeyv(stops_out, "stop_id")
 
+  # --- shapes ---------------------------------------------------------------
+  # Link trips.shape_id to the supplied shapes via the shape_ref carried on
+  # the events (set to match gps2gtfs::g2g_shapes_from_trips()). Keep only
+  # shapes that are actually referenced; error/warn on references with no
+  # matching geometry.
+  shapes_out <- NULL
+  trip_shape <- rep(NA_character_, nrow(trips_key))
+  if (!is.null(shapes)) {
+    shp <- data.table::as.data.table(shapes)
+    validate_required_columns(
+      shp,
+      c("shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"),
+      "shapes"
+    )
+    shp[, shape_id := as.character(shape_id)]
+    if (any(!is.na(trips_key$shape_ref))) {
+      trip_shape <- as.character(trips_key$shape_ref)
+      referenced <- unique(trip_shape[!is.na(trip_shape)])
+      missing_shapes <- setdiff(referenced, unique(shp$shape_id))
+      if (length(missing_shapes) > 0L) {
+        emit(
+          length(missing_shapes),
+          " trip(s) reference a shape_id absent from 'shapes' (e.g. ",
+          paste(utils::head(missing_shapes, 3L), collapse = ", "),
+          "); their shape_id is dropped.",
+          if (isTRUE(strict)) " (strict mode)" else ""
+        )
+        trip_shape[trip_shape %in% missing_shapes] <- NA_character_
+      }
+      shapes_out <- shp[shape_id %in% referenced]
+    } else {
+      emit(
+        "'shapes' supplied but events carry no shape_ref, so shapes cannot ",
+        "be linked to trips (pass shape_ref_prefix= to ",
+        "snapshot_from_stop_times()). Shapes are dropped.",
+        if (isTRUE(strict)) " (strict mode)" else ""
+      )
+    }
+  }
+
   # --- assemble object ------------------------------------------------------
   trips_out <- trips_key[, .(
     route_id,
@@ -169,7 +251,24 @@ snapshot_scaffold <- function(
     trip_id,
     direction_id = as.integer(direction_id)
   )]
+  if (!is.null(shapes_out) && any(!is.na(trip_shape))) {
+    trips_out[, shape_id := trip_shape]
+  }
   data.table::setorderv(trips_out, c("route_id", "service_id", "trip_id"))
+
+  feed_info <- data.table::data.table(
+    feed_publisher_name = agency_name,
+    feed_publisher_url = agency_url,
+    feed_lang = feed_lang,
+    feed_start_date = min(calendar_dates$date),
+    feed_end_date = max(calendar_dates$date)
+  )
+  if (!is.null(feed_contact_email)) {
+    feed_info[, feed_contact_email := as.character(feed_contact_email)]
+  }
+  if (!is.null(feed_contact_url)) {
+    feed_info[, feed_contact_url := as.character(feed_contact_url)]
+  }
 
   feed <- list(
     agency = data.table::data.table(
@@ -183,18 +282,54 @@ snapshot_scaffold <- function(
     trips = trips_out,
     stop_times = stop_times,
     calendar_dates = calendar_dates,
-    feed_info = data.table::data.table(
-      feed_publisher_name = agency_name,
-      feed_publisher_url = agency_url,
-      feed_lang = "en",
-      feed_start_date = min(calendar_dates$date),
-      feed_end_date = max(calendar_dates$date)
-    )
+    feed_info = feed_info
   )
-  if (!is.null(shapes)) {
-    feed$shapes <- data.table::as.data.table(shapes)
+  if (!is.null(shapes_out)) {
+    feed$shapes <- shapes_out
   }
-  as_gtfs_object(feed)
+  stamp_publishable(as_gtfs_object(feed), blockers)
+}
+
+#' Record Publish-Readiness on an Assembled Feed
+#'
+#' Stamps \code{publishable} (logical) and \code{publish_blockers} (character
+#' vector of reasons) attributes on a feed object. Read them with
+#' \code{\link{snapshot_publishable}}.
+#' @noRd
+stamp_publishable <- function(feed, blockers) {
+  attr(feed, "publishable") <- length(blockers) == 0L
+  attr(feed, "publish_blockers") <- as.character(blockers)
+  feed
+}
+
+#' Is an Assembled Feed Ready to Publish?
+#'
+#' Reports whether \code{\link{snapshot_scaffold}} / \code{\link{snapshot_assemble}}
+#' produced a spec-compliant feed, and if not, why. This is the programmatic
+#' counterpart to the assembly warnings: a publish/export step can gate on it
+#' instead of relying on a human noticing a warning.
+#'
+#' @param feed A feed object returned by \code{snapshot_scaffold()} or
+#'   \code{snapshot_assemble()}.
+#' @return A list with \code{publishable} (logical) and \code{blockers}
+#'   (character vector; empty when publishable). A feed with blockers is still
+#'   a valid R object for inspection/analysis - it just should not be published
+#'   as standard GTFS until the blockers are resolved (or built with
+#'   \code{strict = TRUE}, which refuses to produce one).
+#' @examples
+#' \dontrun{
+#' feed <- snapshot_scaffold(events)
+#' status <- snapshot_publishable(feed)
+#' if (!status$publishable) stop(paste(status$blockers, collapse = "; "))
+#' }
+#' @export
+snapshot_publishable <- function(feed) {
+  pub <- attr(feed, "publishable")
+  blk <- attr(feed, "publish_blockers")
+  list(
+    publishable = isTRUE(pub),
+    blockers = if (is.null(blk)) character(0) else as.character(blk)
+  )
 }
 
 #' Assemble a Realized GTFS Feed from Observed Stop Events
@@ -215,9 +350,13 @@ snapshot_scaffold <- function(
 #'   \code{events}; must be given when events span several dates.
 #' @param tz Timezone for GTFS clock strings. Defaults to the baseline's
 #'   \code{agency_timezone} (baseline mode) or "UTC".
+#' @param feed_lang Primary feed language written to
+#'   \code{feed_info.feed_lang} in both modes. Default \code{"en"}.
+#' @param feed_contact_email,feed_contact_url Optional recommended
+#'   \code{feed_info.txt} contact fields, written only when supplied.
 #' @param ... In scaffold mode (no baseline), passed to
 #'   \code{\link{snapshot_scaffold}} (\code{agency}, \code{stops},
-#'   \code{route_type}, \code{shapes}).
+#'   \code{route_type}, \code{shapes}, \code{strict}).
 #' @return A gtfsio-convention feed object (class \code{gtfs}); write it with
 #'   \code{gtfsio::export_gtfs()}.
 #' @export
@@ -226,6 +365,9 @@ snapshot_assemble <- function(
   baseline = NULL,
   service_date = NULL,
   tz = NULL,
+  feed_lang = "en",
+  feed_contact_email = NULL,
+  feed_contact_url = NULL,
   ...
 ) {
   events <- validate_events(events)
@@ -234,7 +376,14 @@ snapshot_assemble <- function(
     if (!is.null(service_date)) {
       events <- events[events$service_date == as.Date(service_date)]
     }
-    return(snapshot_scaffold(events, tz = tz, ...))
+    return(snapshot_scaffold(
+      events,
+      tz = tz,
+      feed_lang = feed_lang,
+      feed_contact_email = feed_contact_email,
+      feed_contact_url = feed_contact_url,
+      ...
+    ))
   }
 
   baseline <- read_gtfs_input(baseline)
@@ -359,10 +508,29 @@ snapshot_assemble <- function(
     } else {
       "https://example.org"
     },
-    feed_lang = "en",
+    feed_lang = feed_lang,
     feed_start_date = yyyymmdd(service_date),
     feed_end_date = yyyymmdd(service_date)
   )
+  if (!is.null(feed_contact_email)) {
+    feed$feed_info[, feed_contact_email := as.character(feed_contact_email)]
+  }
+  if (!is.null(feed_contact_url)) {
+    feed$feed_info[, feed_contact_url := as.character(feed_contact_url)]
+  }
   feed <- feed[!vapply(feed, is.null, logical(1))]
-  as_gtfs_object(feed)
+
+  # Publish-readiness: baseline feeds inherit agency/stops, so they are
+  # normally complete, but verify the two spec-required essentials.
+  blockers <- character(0)
+  if (is.null(feed$agency) || nrow(feed$agency) == 0L) {
+    blockers <- c(blockers, "baseline feed has no agency.txt")
+  }
+  if (!is.null(feed$stops) && all(c("stop_lat", "stop_lon") %in% names(feed$stops))) {
+    n_na <- sum(is.na(feed$stops$stop_lat) | is.na(feed$stops$stop_lon))
+    if (n_na > 0L) {
+      blockers <- c(blockers, paste0(n_na, " stop(s) missing spec-required coordinates"))
+    }
+  }
+  stamp_publishable(as_gtfs_object(feed), blockers)
 }

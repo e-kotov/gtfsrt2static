@@ -10,6 +10,10 @@
 #'   \item{trip_ref}{Trip identity. The GTFS-RT/baseline \code{trip_id} when
 #'     known, a synthetic id for inferred trips. Never NA.}
 #'   \item{route_ref}{Route identity, NA when unknown.}
+#'   \item{shape_ref}{Shape identity linking the trip to \code{shapes.txt},
+#'     NA when unknown. Set by \code{snapshot_from_stop_times(shape_ref_prefix=)}
+#'     to match the ids produced by \code{gps2gtfs::g2g_shapes_from_trips()};
+#'     the assembler writes it to \code{trips.shape_id}.}
 #'   \item{direction_id}{GTFS direction (0/1), NA when unknown.}
 #'   \item{service_date}{\code{Date}. The service day the trip belongs to
 #'     (attributed by trip start; post-midnight stops keep their trip's
@@ -43,6 +47,7 @@ event_source_levels <- c("trip_updates", "positions", "gps")
 event_columns <- c(
   "trip_ref",
   "route_ref",
+  "shape_ref",
   "direction_id",
   "service_date",
   "stop_ref",
@@ -124,18 +129,41 @@ validate_events <- function(events) {
 #' events (see \link{observed-stop-events}).
 #'
 #' @param stop_times The gps2gtfs stop times table: columns \code{trip_id},
-#'   \code{vehicle_id}, \code{date}, \code{direction} (1/2),
-#'   \code{stop_id}, \code{arrival_time}/\code{departure_time}
-#'   ("HH:MM:SS" within the date).
-#' @param tz Timezone the "HH:MM:SS" strings refer to (the timezone the GPS
-#'   data was cleaned in). Default "UTC".
+#'   \code{vehicle_id}, \code{direction} (1/2), \code{stop_id}, and
+#'   \code{arrival_time}/\code{departure_time} as absolute \code{POSIXct}
+#'   values (gps2gtfs >= 0.2.0). Legacy "HH:MM:SS" strings are also
+#'   accepted; they additionally require the \code{date} column they are
+#'   interpreted within (and cannot represent a trip whose stop visits fall
+#'   on the wrong side of midnight unambiguously - prefer POSIXct).
+#' @param tz Timezone the legacy "HH:MM:SS" strings refer to (the timezone
+#'   the GPS data was cleaned in). Ignored for POSIXct input, which carries
+#'   its own timezone. Default "UTC".
 #' @param route_ref Optional route identity to stamp on all events (gps2gtfs
 #'   models one route per run). Default NA.
 #' @param source Provenance source label: \code{"positions"} (GTFS-RT
 #'   Vehicle Positions, default) or \code{"gps"} (raw AVL/logger data).
-#' @param trip_ref_prefix Prefix for synthetic trip identities. Trip refs are
-#'   \code{<prefix><yyyymmdd>_<trip_id>} so they stay unique across service
-#'   dates. Default \code{"g2g_"}.
+#' @param trip_ref_prefix Prefix for synthetic trip identities. When a trip
+#'   has no official id (see \code{trip_id_col}), its trip ref is
+#'   \code{<prefix><yyyymmdd>_<trip_id>} so synthetic refs stay unique across
+#'   service dates. Default \code{"g2g_"}.
+#' @param trip_id_col Optional name of a column carrying the official trip
+#'   identity (e.g. \code{"provided_trip_id"}, as emitted by gps2gtfs's fast
+#'   path from a GTFS-Realtime \code{trip_id}). Where present and non-missing,
+#'   its value becomes the \code{trip_ref} verbatim, so baseline-mode
+#'   assembly can match observed trips to the baseline \code{trips.txt};
+#'   trips lacking it fall back to a synthetic ref. \code{NULL} (default)
+#'   auto-detects a \code{provided_trip_id} column and uses it when present.
+#' @details Each trip is attributed to one service day: the day (in the
+#'   times' timezone) of its first observed stop. Post-midnight stops keep
+#'   their trip's service date, so an overnight trip yields a single
+#'   \code{trip_ref} and the assembler renders its late stops as
+#'   \code{>24:00:00} clock times.
+#' @param shape_ref_prefix Optional character prefix for populating
+#'   \code{shape_ref} from the internal \code{trip_id}, as
+#'   \code{<prefix><trip_id>}. Set it to the \code{shape_id_prefix} used with
+#'   \code{gps2gtfs::g2g_shapes_from_trips()} (default there \code{"SHP_"}) so
+#'   the assembler can link \code{trips.shape_id} to those shapes. \code{NULL}
+#'   (default) leaves \code{shape_ref} as NA (no shape linkage).
 #' @return A validated observed stop events data.table.
 #' @export
 snapshot_from_stop_times <- function(
@@ -143,8 +171,16 @@ snapshot_from_stop_times <- function(
   tz = "UTC",
   route_ref = NA_character_,
   source = c("positions", "gps"),
-  trip_ref_prefix = "g2g_"
+  trip_ref_prefix = "g2g_",
+  trip_id_col = NULL,
+  shape_ref_prefix = NULL
 ) {
+  if (
+    !is.null(shape_ref_prefix) &&
+      (length(shape_ref_prefix) != 1L || !is.character(shape_ref_prefix))
+  ) {
+    stop("'shape_ref_prefix' must be a single string or NULL.", call. = FALSE)
+  }
   source <- match.arg(source)
   dt <- data.table::as.data.table(stop_times)
   validate_required_columns(
@@ -152,7 +188,6 @@ snapshot_from_stop_times <- function(
     c(
       "trip_id",
       "vehicle_id",
-      "date",
       "direction",
       "stop_id",
       "arrival_time",
@@ -161,28 +196,137 @@ snapshot_from_stop_times <- function(
     "stop_times"
   )
 
-  service_date <- as.Date(as.character(dt$date))
+  # Resolve the official-trip-id column: explicit arg, else auto-detect the
+  # provided_trip_id column gps2gtfs's fast path emits.
+  if (is.null(trip_id_col) && "provided_trip_id" %in% names(dt)) {
+    trip_id_col <- "provided_trip_id"
+  }
+  if (!is.null(trip_id_col)) {
+    validate_required_columns(dt, trip_id_col, "stop_times")
+    official_id <- as.character(dt[[trip_id_col]])
+  } else {
+    official_id <- rep(NA_character_, nrow(dt))
+  }
+
+  if (inherits(dt$arrival_time, "POSIXct")) {
+    if (!inherits(dt$departure_time, "POSIXct")) {
+      stop(
+        "'arrival_time' and 'departure_time' must both be POSIXct ",
+        "(or both \"HH:MM:SS\" strings).",
+        call. = FALSE
+      )
+    }
+    arrival <- dt$arrival_time
+    departure <- dt$departure_time
+  } else {
+    # Legacy gps2gtfs (< 0.2.0) encoding: "HH:MM:SS" within the calendar
+    # date of the stop visit. A visit spanning midnight makes the departure
+    # string wrap behind the arrival; repair by shifting it one day.
+    validate_required_columns(dt, "date", "stop_times")
+    arrival <- as.POSIXct(paste(dt$date, dt$arrival_time), tz = tz)
+    departure <- as.POSIXct(paste(dt$date, dt$departure_time), tz = tz)
+    wrapped <- !is.na(arrival) & !is.na(departure) & departure < arrival
+    departure[wrapped] <- departure[wrapped] + 86400
+  }
+  if (anyNA(arrival) || anyNA(departure)) {
+    stop(
+      "stop_times 'arrival_time'/'departure_time' must not contain missing ",
+      "or unparseable values.",
+      call. = FALSE
+    )
+  }
+
+  shape_ref <- if (is.null(shape_ref_prefix)) {
+    rep(NA_character_, nrow(dt))
+  } else {
+    paste0(shape_ref_prefix, as.character(dt$trip_id))
+  }
+
   out <- data.table::data.table(
-    trip_ref = paste0(
-      trip_ref_prefix,
-      format(service_date, "%Y%m%d"),
-      "_",
-      dt$trip_id
-    ),
+    trip_key = as.character(dt$trip_id),
+    official_id = official_id,
     route_ref = rep(as.character(route_ref), nrow(dt)),
+    shape_ref = shape_ref,
     direction_id = as.integer(dt$direction) - 1L,
-    service_date = service_date,
     stop_ref = as.character(dt$stop_id),
     stop_sequence = NA_integer_,
-    arrival_time = as.POSIXct(paste(dt$date, dt$arrival_time), tz = tz),
-    departure_time = as.POSIXct(paste(dt$date, dt$departure_time), tz = tz),
+    arrival_time = arrival,
+    departure_time = departure,
     provenance = rep("observed", nrow(dt)),
     vehicle_ref = as.character(dt$vehicle_id),
     source = rep(source, nrow(dt))
   )
+  # One service day per trip - the day of its first observed stop, in the
+  # times' own timezone - so a midnight-crossing trip keeps a single
+  # trip_ref instead of being split across two service dates.
+  out[,
+    service_date := as.Date(format(min(arrival_time), "%Y-%m-%d")),
+    by = trip_key
+  ]
+  # trip_ref: the official id verbatim where supplied (so baseline-mode
+  # assembly can match the baseline trips.txt), else a synthetic ref that
+  # stays unique across service dates.
+  has_official <- !is.na(out$official_id) & nzchar(trimws(out$official_id))
+  out[, trip_ref := paste0(
+    trip_ref_prefix,
+    format(service_date, "%Y%m%d"),
+    "_",
+    trip_key
+  )]
+  out[has_official, trip_ref := official_id]
+  out[, c("trip_key", "official_id") := NULL]
   data.table::setorderv(out, c("trip_ref", "arrival_time"))
   out[, stop_sequence := seq_len(.N), by = trip_ref]
   validate_events(out)
+}
+
+#' Fill Missing trip_id from the GTFS-RT TripDescriptor
+#'
+#' Where \code{trip_id} is absent, build a stable synthetic identity from the
+#' descriptor fields (route_id, direction_id, start_date, start_time). Rows
+#' that already have a trip_id keep it. A row with no usable descriptor at all
+#' is left NA (it has no recoverable trip identity).
+#' @param dt A data.table with a \code{trip_id} column and any of the
+#'   descriptor columns.
+#' @param prefix Prefix for synthesized ids (marks them as descriptor-derived).
+#' @return \code{dt} with \code{trip_id} filled where it was missing.
+#' @noRd
+synthesize_trip_id <- function(dt, prefix = "rtd_") {
+  tid <- as.character(dt$trip_id)
+  missing_tid <- is.na(tid) | !nzchar(trimws(tid))
+  if (!any(missing_tid)) {
+    return(dt)
+  }
+  desc_cols <- intersect(
+    c("route_id", "direction_id", "start_date", "start_time"),
+    names(dt)
+  )
+  parts <- lapply(desc_cols, function(col) {
+    v <- as.character(dt[[col]][missing_tid])
+    v[is.na(v)] <- ""
+    v
+  })
+  if (length(parts) == 0L || all(vapply(parts, function(v) all(!nzchar(v)), logical(1)))) {
+    warning(
+      sum(missing_tid),
+      " update(s) have neither trip_id nor any TripDescriptor field ",
+      "(route_id/direction_id/start_date/start_time); their trip identity ",
+      "cannot be recovered.",
+      call. = FALSE
+    )
+    return(dt)
+  }
+  synthetic <- paste0(prefix, do.call(paste, c(parts, sep = "_")))
+  dt <- data.table::copy(dt)
+  dt[which(missing_tid), trip_id := synthetic]
+  message(
+    "[INFO] ",
+    sum(missing_tid),
+    " update(s) had no trip_id; identified their trip by the TripDescriptor (",
+    paste(desc_cols, collapse = ", "),
+    ")."
+  )
+  dt
 }
 
 #' Observed Stop Events from GTFS-Realtime Trip Updates
@@ -201,7 +345,11 @@ snapshot_from_stop_times <- function(
 #'   update with \code{trip_id}, \code{stop_id} and/or \code{stop_sequence},
 #'   \code{arrival_time}/\code{arrival_delay},
 #'   \code{departure_time}/\code{departure_delay}, schedule relationships,
-#'   \code{start_date}, \code{vehicle_id}, \code{file_timestamp}.
+#'   \code{start_date}, \code{vehicle_id}, \code{file_timestamp}. When
+#'   \code{trip_id} is absent (some producers, e.g. HSL, identify trips only by
+#'   the GTFS-RT TripDescriptor), a stable identity is synthesized from
+#'   \code{route_id}, \code{direction_id}, \code{start_date}, and
+#'   \code{start_time} so predictions still group per operated trip.
 #' @param baseline Optional baseline static GTFS feed (object or zip path).
 #'   Required to resolve delay-only updates (a delay without an absolute
 #'   time can only be interpreted against the scheduled time).
@@ -218,6 +366,7 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
     route_id = NA_character_,
     direction_id = NA_integer_,
     start_date = NA_character_,
+    start_time = NA_character_,
     vehicle_id = NA_character_,
     stop_id = NA_character_,
     stop_sequence = NA_integer_,
@@ -238,6 +387,14 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
       dt[, (col) := as.POSIXct(dt[[col]], tz = tz)]
     }
   }
+
+  # GTFS-RT identifies a trip by either trip_id or the TripDescriptor
+  # (route_id, direction_id, start_time, start_date). Producers such as HSL
+  # populate only the latter, leaving trip_id NA. Synthesize a stable trip
+  # identity from the descriptor where trip_id is absent, so the reduction
+  # groups per operated trip instead of collapsing all NA-trip_id rows into
+  # one. Runs before cancellation keys and reduction, which key on trip_id.
+  dt <- synthesize_trip_id(dt)
 
   # Service date: explicit start_date, else the poll's local date
   dt[, service_date := parse_start_date(start_date)]
@@ -371,6 +528,7 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
   out <- data.table::data.table(
     trip_ref = as.character(reduced$trip_id),
     route_ref = as.character(reduced$route_id),
+    shape_ref = NA_character_,
     direction_id = as.integer(reduced$direction_id),
     service_date = reduced$service_date,
     stop_ref = as.character(reduced$stop_id),
@@ -388,6 +546,7 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
       data.table::data.table(
         trip_ref = as.character(canceled_keys$trip_id),
         route_ref = as.character(canceled_keys$route_id),
+        shape_ref = NA_character_,
         direction_id = as.integer(canceled_keys$direction_id),
         service_date = canceled_keys$service_date,
         stop_ref = NA_character_,

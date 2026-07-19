@@ -10,7 +10,11 @@ snapshot_scaffold(
   stops = NULL,
   route_type = 3L,
   shapes = NULL,
-  tz = NULL
+  tz = NULL,
+  feed_lang = "en",
+  feed_contact_email = NULL,
+  feed_contact_url = NULL,
+  strict = FALSE
 )
 }
 \arguments{
@@ -28,11 +32,29 @@ are filled).}
 \item{route_type}{GTFS route type for scaffolded routes. Default 3 (bus).}
 
 \item{shapes}{Optional \code{shapes.txt}-shaped table (e.g. from
-\code{gps2gtfs::g2g_shapes_from_trips()}); included verbatim.}
+\code{gps2gtfs::g2g_shapes_from_trips()}). Linked to trips via
+\code{trips.shape_id} when the events carry a matching \code{shape_ref}
+(see \code{snapshot_from_stop_times(shape_ref_prefix=)}); shapes not
+referenced by any trip are dropped, and references without matching
+geometry warn (or error under \code{strict}).}
 
 \item{tz}{Timezone of the service days; used to derive GTFS clock strings
 (with >24:00:00) from absolute event times. Defaults to
 \code{agency$timezone}, else "UTC".}
+
+\item{feed_lang}{Primary language of the feed, written to
+\code{feed_info.feed_lang} (spec-required in feed_info.txt). Default
+\code{"en"}.}
+
+\item{feed_contact_email, feed_contact_url}{Optional recommended
+\code{feed_info.txt} contact fields. Written only when supplied.}
+
+\item{strict}{Logical. When \code{TRUE}, conditions that would yield a
+non-publishable feed - placeholder agency metadata or stops missing
+spec-required coordinates - raise an error instead of a warning. Use it
+as a publish gate: a scaffold that returns under \code{strict = TRUE}
+has no known spec-required gaps introduced by scaffolding (it is not a
+substitute for full GTFS validation). Default \code{FALSE}.}
 }
 \value{
 A gtfsio-convention feed object (class \code{gtfs}, named list of

@@ -9,17 +9,23 @@ snapshot_from_stop_times(
   tz = "UTC",
   route_ref = NA_character_,
   source = c("positions", "gps"),
-  trip_ref_prefix = "g2g_"
+  trip_ref_prefix = "g2g_",
+  trip_id_col = NULL,
+  shape_ref_prefix = NULL
 )
 }
 \arguments{
 \item{stop_times}{The gps2gtfs stop times table: columns \code{trip_id},
-\code{vehicle_id}, \code{date}, \code{direction} (1/2),
-\code{stop_id}, \code{arrival_time}/\code{departure_time}
-("HH:MM:SS" within the date).}
+\code{vehicle_id}, \code{direction} (1/2), \code{stop_id}, and
+\code{arrival_time}/\code{departure_time} as absolute \code{POSIXct}
+values (gps2gtfs >= 0.2.0). Legacy "HH:MM:SS" strings are also
+accepted; they additionally require the \code{date} column they are
+interpreted within (and cannot represent a trip whose stop visits fall
+on the wrong side of midnight unambiguously - prefer POSIXct).}
 
-\item{tz}{Timezone the "HH:MM:SS" strings refer to (the timezone the GPS
-data was cleaned in). Default "UTC".}
+\item{tz}{Timezone the legacy "HH:MM:SS" strings refer to (the timezone
+the GPS data was cleaned in). Ignored for POSIXct input, which carries
+its own timezone. Default "UTC".}
 
 \item{route_ref}{Optional route identity to stamp on all events (gps2gtfs
 models one route per run). Default NA.}
@@ -27,9 +33,25 @@ models one route per run). Default NA.}
 \item{source}{Provenance source label: \code{"positions"} (GTFS-RT
 Vehicle Positions, default) or \code{"gps"} (raw AVL/logger data).}
 
-\item{trip_ref_prefix}{Prefix for synthetic trip identities. Trip refs are
-\code{<prefix><yyyymmdd>_<trip_id>} so they stay unique across service
-dates. Default \code{"g2g_"}.}
+\item{trip_ref_prefix}{Prefix for synthetic trip identities. When a trip
+has no official id (see \code{trip_id_col}), its trip ref is
+\code{<prefix><yyyymmdd>_<trip_id>} so synthetic refs stay unique across
+service dates. Default \code{"g2g_"}.}
+
+\item{trip_id_col}{Optional name of a column carrying the official trip
+identity (e.g. \code{"provided_trip_id"}, as emitted by gps2gtfs's fast
+path from a GTFS-Realtime \code{trip_id}). Where present and non-missing,
+its value becomes the \code{trip_ref} verbatim, so baseline-mode
+assembly can match observed trips to the baseline \code{trips.txt};
+trips lacking it fall back to a synthetic ref. \code{NULL} (default)
+auto-detects a \code{provided_trip_id} column and uses it when present.}
+
+\item{shape_ref_prefix}{Optional character prefix for populating
+\code{shape_ref} from the internal \code{trip_id}, as
+\code{<prefix><trip_id>}. Set it to the \code{shape_id_prefix} used with
+\code{gps2gtfs::g2g_shapes_from_trips()} (default there \code{"SHP_"}) so
+the assembler can link \code{trips.shape_id} to those shapes. \code{NULL}
+(default) leaves \code{shape_ref} as NA (no shape linkage).}
 }
 \value{
 A validated observed stop events data.table.
@@ -38,4 +60,11 @@ A validated observed stop events data.table.
 Converts the \code{$stop_times} table produced by
 \code{gps2gtfs::g2g_extract_trips_and_stop_times()} into observed stop
 events (see \link{observed-stop-events}).
+}
+\details{
+Each trip is attributed to one service day: the day (in the
+times' timezone) of its first observed stop. Post-midnight stops keep
+their trip's service date, so an overnight trip yields a single
+\code{trip_ref} and the assembler renders its late stops as
+\code{>24:00:00} clock times.
 }
