@@ -1,0 +1,199 @@
+---
+title: "Frequency-based feeds from observed service"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Frequency-based feeds from observed service}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+has_gtfsrealtime <- requireNamespace("gtfsrealtime", quietly = TRUE)
+```
+
+Most of `gtfsrt2static` assembles **stop-times-based** feeds: one row per observed
+stop event, preserving every run. `snapshot_frequencies()` does the opposite. It
+collapses *many* observed runs of a route-direction into a compact,
+**frequency-based** schedule — one representative trip per time window plus a
+`frequencies.txt` headway — and emits one feed per reliability quantile:
+
+- **structural** (p05): a free-flow lower bound,
+- **median** (p50): a typical day,
+- **reliable** (p95): a slow, worst-case upper bound.
+
+The same quantile is applied to *both* travel time and headway, so the reliable
+feed is slower and less frequent than the structural one. This is the shape you
+want for accessibility and reliability analysis, where you compare routing under
+optimistic, typical, and pessimistic service.
+
+```{r setup}
+library(gtfsrt2static)
+library(data.table)
+```
+
+## The input: observed stop events
+
+Every assembler in this package consumes the canonical *observed stop events*
+table (see `?"observed-stop-events"`): one row per trip × stop × service date,
+with absolute `POSIXct` arrival/departure times and a `provenance` label. You
+get it from `snapshot_from_trip_updates()` (GTFS-Realtime Trip Updates) or
+`snapshot_from_stop_times()` (gps2gtfs-derived stop times). For a first,
+self-contained look we build a tiny one by hand: one route, six runs across a
+morning peak, four stops, with per-run variation so the quantiles differ.
+
+```{r synthetic-events}
+base_date <- as.Date("2026-05-06") # a Wednesday
+starts <- as.POSIXct(
+  paste(base_date, c("07:00", "07:12", "07:25", "07:41", "08:02", "08:20")),
+  tz = "UTC"
+) # rising headways: 12, 13, 16, 21, 18 min
+stops <- c("A1", "A2", "A3", "A4")
+nominal <- c(0, 300, 720, 1080) # seconds from trip start
+spread <- c(0, 40, -30, 90, 20, -20) # per-run travel-time noise
+
+events <- rbindlist(lapply(seq_along(starts), function(i) {
+  off <- nominal + c(0, 1, 2, 3) * spread[i] # later stops accumulate spread
+  data.frame(
+    trip_ref = paste0("run", i), route_ref = "A", shape_ref = NA_character_,
+    direction_id = 0L, service_date = base_date,
+    stop_ref = stops, stop_sequence = NA_integer_,
+    arrival_time = starts[i] + off,
+    departure_time = starts[i] + off + 20,
+    provenance = "observed", vehicle_ref = paste0("veh", i),
+    source = "gps", stringsAsFactors = FALSE
+  )
+}))
+head(events)
+```
+
+## Assembling the feeds
+
+`snapshot_frequencies()` needs the events, a **windows** definition (a
+frequency feed is organised by time window), and — to be publishable — an
+`agency` and a `stops` table with coordinates. `strict = TRUE` turns missing
+agency/coordinate warnings into errors, acting as a publish gate.
+
+```{r assemble}
+stops_tbl <- data.frame(
+  stop_id = stops,
+  stop_lat = c(40.70, 40.71, 40.72, 40.73),
+  stop_lon = c(-73.99, -73.98, -73.97, -73.96)
+)
+
+feeds <- snapshot_frequencies(
+  events,
+  windows = list(am_peak = c("07:00", "09:00")),
+  stops = stops_tbl,
+  agency = list(name = "Demo Transit", url = "https://example.org", timezone = "UTC"),
+  strict = TRUE
+)
+names(feeds)
+```
+
+You get a named list of `gtfsio`-convention feed objects, one per quantile. Each
+is a standard GTFS feed you write with `gtfsio::export_gtfs()`.
+
+The `frequencies.txt` carries the observed headway for the window, per quantile:
+
+```{r frequencies}
+feeds$structural$frequencies
+feeds$reliable$frequencies
+```
+
+The representative `stop_times` are **offsets from a `00:00:00` trip start**
+(the `exact_times = 0` convention: only relative offsets matter), clamped
+non-decreasing so arrivals never go backwards along the trip:
+
+```{r stop-times}
+feeds$median$stop_times
+```
+
+The three feeds order as you'd expect — the reliable trip takes longer to reach
+its last stop, and runs at a longer headway, than the structural one:
+
+```{r ordering}
+clock_secs <- function(x) {
+  p <- tstrsplit(x, ":", fixed = TRUE)
+  as.integer(p[[1]]) * 3600L + as.integer(p[[2]]) * 60L + as.integer(p[[3]])
+}
+last_arrival <- sapply(feeds, function(f) {
+  max(clock_secs(f$stop_times$arrival_time))
+})
+headway <- sapply(feeds, function(f) f$frequencies$headway_secs)
+data.frame(scenario = names(feeds), last_arrival_secs = last_arrival, headway_secs = headway)
+```
+
+Each feed also carries a programmatic publish gate — `snapshot_publishable()`
+reads the `publishable` / `publish_blockers` attributes stamped on it:
+
+```{r publishable}
+snapshot_publishable(feeds$median)$publishable
+```
+
+## From a real GTFS-Realtime feed
+
+In practice the events come from a real feed. Here is the exact same pipeline on
+a bundled snapshot of New York City MTA Trip Updates (via the `gtfsrealtime`
+package) — no manual preprocessing beyond selecting a few routes. The reader
+emits warnings about duplicate trip descriptors in this particular snapshot;
+those concern the source feed's identifiers, not the conversion, so we suppress
+them here.
+
+```{r real-events, eval = has_gtfsrealtime}
+tu <- suppressWarnings(gtfsrealtime::read_gtfsrt_trip_updates(
+  system.file("nyc-trip-updates.pb.bz2", package = "gtfsrealtime"),
+  timezone = "America/New_York"
+))
+tu <- as.data.table(tu)
+tu <- tu[route_id %in% c("M1", "M3", "M4")] # a small Manhattan slice
+
+events_nyc <- snapshot_from_trip_updates(tu, tz = "America/New_York")
+table(events_nyc$provenance)
+```
+
+A single poll is *prediction-dominated* — most stops have not been passed yet,
+so they are labelled `predicted-last` rather than `observed`; an archive
+collected over time (see `rt_collect()`) shifts that balance. The frequency
+assembly treats both as timed passages.
+
+Assembling frequency feeds is identical to the synthetic case. Supplying an
+`agency` clears the agency blocker; the only remaining blocker is stop
+coordinates, which live in the operator's *static* GTFS `stops.txt`:
+
+```{r real-assemble, eval = has_gtfsrealtime}
+feeds_nyc <- snapshot_frequencies(
+  events_nyc,
+  windows = list(pm_peak = c("16:00", "19:00"), evening = c("19:00", "22:00")),
+  agency = list(name = "MTA New York City Transit",
+                url = "https://www.mta.info", timezone = "America/New_York"),
+  strict = FALSE # no coordinates yet -> a non-publishable analysis feed
+)
+snapshot_publishable(feeds_nyc$median)$publishable
+snapshot_publishable(feeds_nyc$median)$blockers
+```
+
+To make it publishable, pass a `stops` data frame (`stop_id` / `stop_lat` /
+`stop_lon`) read from the static feed, exactly as in the synthetic example:
+
+```{r real-publish, eval = FALSE}
+stops <- gtfsio::import_gtfs("path/to/mta_static.zip")$stops
+feeds_nyc <- snapshot_frequencies(
+  events_nyc,
+  windows = list(pm_peak = c("16:00", "19:00"), evening = c("19:00", "22:00")),
+  stops = stops[, c("stop_id", "stop_lat", "stop_lon")],
+  agency = list(name = "MTA New York City Transit",
+                url = "https://www.mta.info", timezone = "America/New_York"),
+  strict = TRUE
+)
+```
+
+Run on a coordinate-complete 25-route Manhattan slice (537 trips), all three
+feeds pass the MobilityData `gtfs-validator` (v6.0.0) with **zero ERROR
+notices**; the residual notices are the WARNINGs expected for a historical,
+prediction-heavy single snapshot (fast-travel data-quality signals, an expired
+calendar). The resulting feeds are ordinary GTFS zips that `gtfstools`,
+`tidytransit`, and any other GTFS tool read directly.

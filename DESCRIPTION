@@ -2,7 +2,7 @@ Type: Package
 Package: gtfsrt2static
 Title: Realized Static GTFS Snapshots from GTFS-Realtime and GPS-Derived
     Observations
-Version: 0.0.0.9000
+Version: 0.0.0.9001
 Authors@R: 
     person("Egor", "Kotov", , "kotov.egor@gmail.com", role = c("aut", "cre", "cph"),
            comment = c(ORCID = "0000-0001-6690-5345"))
@@ -27,7 +27,10 @@ Suggests:
     gtfsrealtime,
     gtfstools,
     jsonlite,
+    knitr,
+    rmarkdown,
     testthat (>= 3.0.0)
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

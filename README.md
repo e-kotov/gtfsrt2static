@@ -30,7 +30,8 @@ live endpoints ──rt_collect()──► daily .pb ZIPs
 |---|---|---|
 | collect | `rt_collect()`, `rt_rotate()`, `rt_coverage()`, `rt_service_template()` | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
 | events | `snapshot_from_trip_updates()`, `snapshot_from_stop_times()`, `validate_events()` | reduce observations to one row per trip × stop × service date, with provenance |
-| assemble | `snapshot_assemble()`, `snapshot_scaffold()` | merge events into a baseline feed (official IDs preserved) or scaffold a compliant feed from scratch |
+| summarise | `obs_headways()`, `obs_travel_times()`, `obs_stop_order()`, `time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
+| assemble | `snapshot_assemble()`, `snapshot_scaffold()`, `snapshot_frequencies()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed |
 
 ## Quick example
 
@@ -52,7 +53,20 @@ feed   <- snapshot_assemble(
   agency = list(name = "My Agency", url = "https://...", timezone = "America/New_York"),
   stops  = gps2gtfs::g2g_stops_from_positions(positions)
 )
+
+# Collapse many runs into a frequency-based feed at three reliability quantiles
+feeds <- snapshot_frequencies(
+  events,
+  windows = list(am_peak = c("06:00", "09:00"), midday = c("09:00", "16:00")),
+  stops   = stops_with_coords,
+  agency  = list(name = "My Agency", url = "https://...", timezone = "America/New_York")
+)
+feeds$structural; feeds$median; feeds$reliable   # p05 / p50 / p95 feeds
 ```
+
+See `vignette("frequency-feeds")` for the frequency workflow end to end. On a
+real 25-route Manhattan MTA slice, the three feeds pass the MobilityData
+`gtfs-validator` (v6.0.0) with zero ERROR notices.
 
 ## Installation
 
@@ -65,7 +79,8 @@ pak::pak("e-kotov/gtfsrt2static")
 
 - Both input paths converge on the **observed stop events** schema
   (`?"observed-stop-events"`): trip × stop × service date × actual times ×
-  provenance (`observed` / `predicted-last` / `skipped` / `canceled`).
+  provenance (`observed` / `predicted-last` / `propagated` / `skipped` /
+  `canceled`).
 - Times are absolute `POSIXct` internally; `stop_times.txt` clock strings
   (including `>24:00:00` for post-midnight stops) are derived only at
   assembly.
