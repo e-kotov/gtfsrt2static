@@ -61,30 +61,13 @@ snapshot_scaffold <- function(
   # are recorded on the returned object (attr "publishable" / "publish_blockers")
   # so a downstream publish step can check them programmatically instead of
   # relying on a human reading warnings. In strict mode any of them is an error.
-  blockers <- character(0)
-  emit <- function(..., blocker = NULL) {
-    if (!is.null(blocker)) {
-      blockers[[length(blockers) + 1L]] <<- blocker
-    }
-    if (isTRUE(strict)) {
-      stop(..., call. = FALSE)
-    } else {
-      warning(..., call. = FALSE)
-    }
-  }
+  sink <- make_blocker_sink(strict)
+  emit <- sink$emit
 
-  if (is.null(agency) || is.null(agency$name)) {
-    emit(
-      "No agency metadata supplied; agency.txt gets placeholder values. ",
-      "Pass agency = list(name=, url=, timezone=) - these spec-required ",
-      "fields are not derivable from GTFS-RT.",
-      if (isTRUE(strict)) " (strict mode)" else "",
-      blocker = "agency.txt has placeholder values (name/url/timezone not supplied)"
-    )
-  }
-  agency_name <- if (!is.null(agency$name)) agency$name else "Unknown agency (placeholder)"
-  agency_url <- if (!is.null(agency$url)) agency$url else "https://example.org"
-  agency_tz <- if (!is.null(agency$timezone)) agency$timezone else "Etc/UTC"
+  ag <- resolve_agency(agency, emit, strict)
+  agency_name <- ag$name
+  agency_url <- ag$url
+  agency_tz <- ag$timezone
   if (is.null(tz)) {
     tz <- if (!is.null(agency$timezone)) agency$timezone else "UTC"
   }
@@ -151,58 +134,7 @@ snapshot_scaffold <- function(
 
   # --- stops ----------------------------------------------------------------
   stop_ids <- sort(unique(stop_times$stop_id))
-  if (!is.null(stops)) {
-    sdt <- data.table::as.data.table(stops)
-    if ("latitude" %in% names(sdt)) {
-      data.table::setnames(sdt, "latitude", "stop_lat")
-    }
-    if ("longitude" %in% names(sdt)) {
-      data.table::setnames(sdt, "longitude", "stop_lon")
-    }
-    validate_required_columns(sdt, c("stop_id", "stop_lat", "stop_lon"), "stops")
-    if (!"stop_name" %in% names(sdt)) {
-      sdt[, stop_name := paste("Stop", stop_id)]
-    }
-    sdt <- sdt[, .(
-      stop_id = as.character(stop_id),
-      stop_name = as.character(stop_name),
-      stop_lat = as.double(stop_lat),
-      stop_lon = as.double(stop_lon)
-    )]
-    sdt <- unique(sdt, by = "stop_id")
-  } else {
-    sdt <- data.table::data.table(
-      stop_id = character(),
-      stop_name = character(),
-      stop_lat = double(),
-      stop_lon = double()
-    )
-  }
-  missing_stops <- setdiff(stop_ids, sdt$stop_id)
-  if (length(missing_stops) > 0L) {
-    emit(
-      length(missing_stops),
-      " stop(s) have no coordinates (spec-required stop_lat/stop_lon are ",
-      "NA). Supply 'stops' - e.g. estimated from Vehicle Positions with ",
-      "gps2gtfs::g2g_stops_from_positions() - before publishing.",
-      if (isTRUE(strict)) " (strict mode)" else "",
-      blocker = paste0(
-        length(missing_stops),
-        " stop(s) missing spec-required coordinates"
-      )
-    )
-    sdt <- rbind(
-      sdt,
-      data.table::data.table(
-        stop_id = missing_stops,
-        stop_name = paste("Stop", missing_stops),
-        stop_lat = NA_real_,
-        stop_lon = NA_real_
-      )
-    )
-  }
-  stops_out <- sdt[stop_id %in% stop_ids]
-  data.table::setkeyv(stops_out, "stop_id")
+  stops_out <- build_stops_table(stop_ids, stops, emit, strict)
 
   # --- shapes ---------------------------------------------------------------
   # Link trips.shape_id to the supplied shapes via the shape_ref carried on
@@ -287,7 +219,7 @@ snapshot_scaffold <- function(
   if (!is.null(shapes_out)) {
     feed$shapes <- shapes_out
   }
-  stamp_publishable(as_gtfs_object(feed), blockers)
+  stamp_publishable(as_gtfs_object(feed), sink$blockers())
 }
 
 #' Record Publish-Readiness on an Assembled Feed
@@ -300,6 +232,107 @@ stamp_publishable <- function(feed, blockers) {
   attr(feed, "publishable") <- length(blockers) == 0L
   attr(feed, "publish_blockers") <- as.character(blockers)
   feed
+}
+
+#' Collect publish blockers while warning (or erroring under strict mode).
+#'
+#' Returns a list with \code{emit(..., blocker=)} - which records a blocker
+#' string and then \code{warning()}s, or \code{stop()}s when \code{strict} -
+#' and \code{blockers()} to read what was collected. Shared by the scaffold
+#' and frequency assemblers so both gate publication identically.
+#' @noRd
+make_blocker_sink <- function(strict) {
+  env <- new.env(parent = emptyenv())
+  env$blockers <- character(0)
+  emit <- function(..., blocker = NULL) {
+    if (!is.null(blocker)) {
+      env$blockers <- c(env$blockers, blocker)
+    }
+    if (isTRUE(strict)) {
+      stop(..., call. = FALSE)
+    } else {
+      warning(..., call. = FALSE)
+    }
+  }
+  list(emit = emit, blockers = function() env$blockers)
+}
+
+#' Resolve agency metadata to name/url/timezone, flagging placeholders.
+#' @noRd
+resolve_agency <- function(agency, emit, strict) {
+  if (is.null(agency) || is.null(agency$name)) {
+    emit(
+      "No agency metadata supplied; agency.txt gets placeholder values. ",
+      "Pass agency = list(name=, url=, timezone=) - these spec-required ",
+      "fields are not derivable from GTFS-RT.",
+      if (isTRUE(strict)) " (strict mode)" else "",
+      blocker = "agency.txt has placeholder values (name/url/timezone not supplied)"
+    )
+  }
+  list(
+    name = if (!is.null(agency$name)) agency$name else "Unknown agency (placeholder)",
+    url = if (!is.null(agency$url)) agency$url else "https://example.org",
+    timezone = if (!is.null(agency$timezone)) agency$timezone else "Etc/UTC"
+  )
+}
+
+#' Build stops.txt for the given stop_ids from a user stops table, flagging
+#' any stop that lacks spec-required coordinates as a publish blocker.
+#' @noRd
+build_stops_table <- function(stop_ids, stops, emit, strict) {
+  if (!is.null(stops)) {
+    sdt <- data.table::as.data.table(stops)
+    if ("latitude" %in% names(sdt)) {
+      data.table::setnames(sdt, "latitude", "stop_lat")
+    }
+    if ("longitude" %in% names(sdt)) {
+      data.table::setnames(sdt, "longitude", "stop_lon")
+    }
+    validate_required_columns(sdt, c("stop_id", "stop_lat", "stop_lon"), "stops")
+    if (!"stop_name" %in% names(sdt)) {
+      sdt[, stop_name := paste("Stop", stop_id)]
+    }
+    sdt <- sdt[, .(
+      stop_id = as.character(stop_id),
+      stop_name = as.character(stop_name),
+      stop_lat = as.double(stop_lat),
+      stop_lon = as.double(stop_lon)
+    )]
+    sdt <- unique(sdt, by = "stop_id")
+  } else {
+    sdt <- data.table::data.table(
+      stop_id = character(),
+      stop_name = character(),
+      stop_lat = double(),
+      stop_lon = double()
+    )
+  }
+  missing_stops <- setdiff(stop_ids, sdt$stop_id)
+  if (length(missing_stops) > 0L) {
+    emit(
+      length(missing_stops),
+      " stop(s) have no coordinates (spec-required stop_lat/stop_lon are ",
+      "NA). Supply 'stops' - e.g. estimated from Vehicle Positions with ",
+      "gps2gtfs::g2g_stops_from_positions() - before publishing.",
+      if (isTRUE(strict)) " (strict mode)" else "",
+      blocker = paste0(
+        length(missing_stops),
+        " stop(s) missing spec-required coordinates"
+      )
+    )
+    sdt <- rbind(
+      sdt,
+      data.table::data.table(
+        stop_id = missing_stops,
+        stop_name = paste("Stop", missing_stops),
+        stop_lat = NA_real_,
+        stop_lon = NA_real_
+      )
+    )
+  }
+  stops_out <- sdt[stop_id %in% stop_ids]
+  data.table::setkeyv(stops_out, "stop_id")
+  stops_out
 }
 
 #' Is an Assembled Feed Ready to Publish?

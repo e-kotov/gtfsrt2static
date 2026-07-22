@@ -121,3 +121,41 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
   # Overnight stop must be encoded past 24:00:00, not wrapped to 00:05:00.
   expect_true(any(grepl("^24:", feed$stop_times$arrival_time)))
 })
+
+test_that("frequency-based scenario feeds have no ERROR-level validator notices", {
+  skip_on_cran()
+  if (!nzchar(Sys.getenv("GTFSRT2STATIC_RUN_VALIDATOR"))) {
+    skip("Set GTFSRT2STATIC_RUN_VALIDATOR=1 to run the MobilityData validator.")
+  }
+  skip_if_not_installed("gtfstools")
+  skip_if_not_installed("jsonlite")
+  skip_if_offline()
+  if (!resolve_java()) {
+    skip("No Java runtime found; MobilityData validator cannot run.")
+  }
+
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    agency = list(name = "Test Transit", url = "https://example.org", timezone = "UTC"),
+    stops = data.frame(
+      stop_id = c("S1", "S2", "S3"),
+      stop_lat = c(40.71, 40.72, 40.73),
+      stop_lon = c(-74.01, -74.02, -74.03)
+    ),
+    strict = TRUE
+  )
+  for (s in names(feeds)) {
+    notices <- validator_notices(feeds[[s]])
+    errors <- if (is.null(notices) || length(notices) == 0L) {
+      character()
+    } else {
+      as.character(notices$code[notices$severity == "ERROR"])
+    }
+    expect_identical(
+      errors,
+      character(),
+      info = paste0(s, " validator ERRORs: ", paste(errors, collapse = ", "))
+    )
+  }
+})

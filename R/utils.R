@@ -36,6 +36,40 @@ yyyymmdd <- function(d) {
   as.integer(format(as.Date(d), "%Y%m%d"))
 }
 
+#' Format non-negative integer seconds as a GTFS clock string, allowing hours
+#' >= 24 (e.g. 88200 -> "24:30:00"). Used for frequency-trip stop_times, whose
+#' times are offsets from trip start (00:00:00).
+#'
+#' NA or negative input is a programming error, not a value to encode: silently
+#' producing "NA:NA:NA" (or a negative clock) would ship an invalid GTFS field.
+#' It signals that unserved stops (NA offsets) leaked into a representative
+#' pattern, so fail loudly instead.
+#' @noRd
+secs_to_clock <- function(secs) {
+  secs <- as.integer(round(secs))
+  if (anyNA(secs)) {
+    stop(
+      sum(is.na(secs)),
+      " time offset(s) are NA and cannot be encoded as a GTFS clock string ",
+      "(would be \"NA:NA:NA\"). This usually means unserved (skipped/canceled) ",
+      "stops entered a representative pattern.",
+      call. = FALSE
+    )
+  }
+  if (any(secs < 0L)) {
+    stop(
+      sum(secs < 0L),
+      " time offset(s) are negative and cannot be encoded as a GTFS clock ",
+      "string.",
+      call. = FALSE
+    )
+  }
+  h <- secs %/% 3600L
+  m <- (secs %% 3600L) %/% 60L
+  s <- secs %% 60L
+  sprintf("%02d:%02d:%02d", h, m, s)
+}
+
 #' Parse GTFS-RT start_date (YYYYMMDD) Values to Date
 #' @noRd
 parse_start_date <- function(x) {

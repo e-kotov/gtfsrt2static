@@ -428,6 +428,21 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
     dt <- dt[!stop_schedule_relationship %in% "NO_DATA"]
   }
 
+  # A stop-time update that references no stop at all - neither stop_id nor
+  # stop_sequence - carries no stop identity. On a (non-canceled) trip it would
+  # otherwise become an NA-stop_ref event that violates the schema. Real feeds
+  # emit a few such empty rows (e.g. a trip header with no stop-time), so drop
+  # them rather than fail. Canceled trips are already removed above.
+  no_stop_ref <- (is.na(dt$stop_id) |
+    !nzchar(trimws(as.character(dt$stop_id)))) & is.na(dt$stop_sequence)
+  if (any(no_stop_ref)) {
+    message(
+      "[INFO] Dropped ", sum(no_stop_ref),
+      " stop-time update(s) with neither stop_id nor stop_sequence."
+    )
+    dt <- dt[!no_stop_ref]
+  }
+
   # Delay-only updates need scheduled times from a baseline
   dt[, delay_only_arr := is.na(arrival_time) & !is.na(arrival_delay)]
   dt[, delay_only_dep := is.na(departure_time) & !is.na(departure_delay)]
@@ -531,7 +546,11 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
     shape_ref = NA_character_,
     direction_id = as.integer(reduced$direction_id),
     service_date = reduced$service_date,
-    stop_ref = as.character(reduced$stop_id),
+    # stop_key is stop_id when present, else "seq_<stop_sequence>": a feed that
+    # identifies stops only by sequence (NA stop_id) still gets a non-NA
+    # stop_ref instead of failing the schema. Rows with neither were dropped
+    # above, so stop_key is never "seq_NA".
+    stop_ref = as.character(reduced$stop_key),
     stop_sequence = as.integer(reduced$stop_sequence),
     arrival_time = arr_out,
     departure_time = dep_out,

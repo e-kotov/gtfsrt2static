@@ -214,3 +214,37 @@ test_that("rows with neither trip_id nor descriptor warn", {
     "cannot be recovered"
   )
 })
+
+test_that("stop_ref falls back to seq_<n> when only stop_sequence is present", {
+  ts <- function(x) as.POSIXct(x, tz = "UTC")
+  upd <- data.frame(
+    id = "TU",
+    trip_id = "T1",
+    route_id = "R1",
+    direction_id = 0L,
+    start_date = "20260714",
+    trip_schedule_relationship = "SCHEDULED",
+    # row 3: stop_sequence only (NA stop_id) -> synthesized; row 4: neither -> dropped
+    stop_sequence = c(1L, 2L, 3L, NA),
+    stop_id = c("S1", "S2", NA, NA),
+    arrival_time = ts(c(
+      "2026-07-14 06:00:00", "2026-07-14 06:05:00", "2026-07-14 06:10:00", NA
+    )),
+    departure_time = ts(c(
+      "2026-07-14 06:00:30", "2026-07-14 06:05:30", "2026-07-14 06:10:30", NA
+    )),
+    stop_schedule_relationship = c("SCHEDULED", "SCHEDULED", "SCHEDULED", NA),
+    vehicle_id = "v1",
+    file_timestamp = ts("2026-07-14 06:10:00"),
+    stringsAsFactors = FALSE
+  )
+  expect_message(
+    ev <- snapshot_from_trip_updates(upd),
+    "neither stop_id nor stop_sequence"
+  )
+  # real stop_ids kept; sequence-only row synthesized; empty row dropped
+  expect_identical(sort(ev$stop_ref), c("S1", "S2", "seq_3"))
+  expect_false(anyNA(ev$stop_ref))
+  expect_identical(ev[stop_ref == "seq_3", stop_sequence], 3L)
+  expect_s3_class(validate_events(ev), "data.table")
+})
