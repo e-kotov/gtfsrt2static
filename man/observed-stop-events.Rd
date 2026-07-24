@@ -36,5 +36,10 @@ assembler derives GTFS clock strings (with >24:00:00) from them.}
 \item{vehicle_ref}{Vehicle identity, NA when unknown.}
 \item{source}{One of \code{"trip_updates"}, \code{"positions"},
 \code{"gps"}.}
+\item{pattern_ref}{\emph{Optional, additive.} K-way branch/short-turn
+variant identity carried through from the gps2gtfs C5 contract; the
+handoff to the cross-trip stop-order stage. Reserved nullable - NA until
+a gps2gtfs pattern detector is enabled - and only present when the
+producer supplies it, so converters that do not emit it stay valid.}
 }
 }

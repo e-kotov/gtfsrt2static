@@ -31,6 +31,11 @@
 #'   \item{vehicle_ref}{Vehicle identity, NA when unknown.}
 #'   \item{source}{One of \code{"trip_updates"}, \code{"positions"},
 #'     \code{"gps"}.}
+#'   \item{pattern_ref}{\emph{Optional, additive.} K-way branch/short-turn
+#'     variant identity carried through from the gps2gtfs C5 contract; the
+#'     handoff to the cross-trip stop-order stage. Reserved nullable - NA until
+#'     a gps2gtfs pattern detector is enabled - and only present when the
+#'     producer supplies it, so converters that do not emit it stay valid.}
 #' }
 #'
 #' @name observed-stop-events
@@ -44,6 +49,9 @@ event_provenance_levels <- c(
   "canceled"
 )
 event_source_levels <- c("trip_updates", "positions", "gps")
+# Optional, additive C6 columns (nullable, only present when a producer emits
+# them). Recognised by validate_events and kept after the required block.
+event_columns_optional <- c("pattern_ref")
 event_columns <- c(
   "trip_ref",
   "route_ref",
@@ -116,8 +124,15 @@ validate_events <- function(events) {
       call. = FALSE
     )
   }
+  # Optional additive columns: if present, type-check but never require.
+  if ("pattern_ref" %in% names(dt) && !is.character(dt$pattern_ref)) {
+    dt[, pattern_ref := as.character(pattern_ref)]
+  }
 
-  data.table::setcolorder(dt, event_columns)
+  # Required columns first, then any recognised optional columns, then the
+  # rest - so an emitted pattern_ref keeps a stable, documented position.
+  present_optional <- intersect(event_columns_optional, names(dt))
+  data.table::setcolorder(dt, c(event_columns, present_optional))
   data.table::setkeyv(dt, c("service_date", "trip_ref", "stop_sequence"))
   dt[]
 }
@@ -242,12 +257,26 @@ snapshot_from_stop_times <- function(
     paste0(shape_ref_prefix, as.character(dt$trip_id))
   }
 
+  # GTFS direction_id (0/1). The additive C5 contract carries a clean
+  # `orientation_id` (already 0/1) that a gps2gtfs orientation detector sets;
+  # map it straight into direction_id. Until that detector is enabled it is
+  # NA, so fall back to the legacy `direction` (1..K) field, which is what
+  # every current feed relies on. This keeps direction_id byte-identical for
+  # today's detector-off inputs while letting orientation_id take over
+  # per-trip once populated.
+  direction_id <- as.integer(dt$direction) - 1L
+  if ("orientation_id" %in% names(dt)) {
+    oid <- as.integer(dt$orientation_id)
+    has_oid <- !is.na(oid)
+    direction_id[has_oid] <- oid[has_oid]
+  }
+
   out <- data.table::data.table(
     trip_key = as.character(dt$trip_id),
     official_id = official_id,
     route_ref = rep(as.character(route_ref), nrow(dt)),
     shape_ref = shape_ref,
-    direction_id = as.integer(dt$direction) - 1L,
+    direction_id = direction_id,
     stop_ref = as.character(dt$stop_id),
     stop_sequence = NA_integer_,
     arrival_time = arrival,
@@ -256,6 +285,13 @@ snapshot_from_stop_times <- function(
     vehicle_ref = as.character(dt$vehicle_id),
     source = rep(source, nrow(dt))
   )
+  # Additive, nullable C6 column: carry the K-way `pattern_ref` through from
+  # C5 when present (the handoff to the cross-trip stop-order stage). Reserved
+  # nullable - NA until the gps2gtfs pattern detector is enabled - and only
+  # emitted when the producer supplies it, so other converters are unaffected.
+  if ("pattern_ref" %in% names(dt)) {
+    out[, pattern_ref := as.character(dt$pattern_ref)]
+  }
   # One service day per trip - the day of its first observed stop, in the
   # times' own timezone - so a midnight-crossing trip keeps a single
   # trip_ref instead of being split across two service dates.
