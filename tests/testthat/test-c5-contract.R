@@ -1,5 +1,5 @@
-# Coordination with the additive, versioned gps2gtfs C5 contract change
-# (gps2gtfs private/terminal-detection-spike.md §3). gps2gtfs now appends
+# Coordination with the additive, versioned gps2gtfs C5 contract change.
+# gps2gtfs now appends
 # orientation_id / orientation_status / orientation_confidence / pattern_ref
 # (+ trips-only anchors) to its $stop_times. This asserts that:
 #   1. those extra columns do not perturb C6 assembly (round-trip), and

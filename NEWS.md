@@ -1,5 +1,18 @@
 # gtfsrt2static 0.0.0.9001 (development version)
 
+* **summarise**: `obs_headways_by_passage()` estimates headways from successive
+  vehicle passages at one direction-unique reference stop per route-direction.
+  It is useful when `trip_ref` is not a per-run identifier: consecutive
+  detections of the same vehicle at a stop are collapsed with
+  `min_revisit_gap_s`, missing `vehicle_ref` degrades to one passage per
+  detection with a warning, shared bidirectional stops are rejected or skipped,
+  unknown-direction rows are warned and excluded from output, and output
+  headway columns match `obs_headways()`. A converter that has already reduced
+  repeated visits cannot supply passage headways.
+* **assemble (frequencies)**: `snapshot_frequencies(headway_method = "passage")`
+  can opt into passage-derived frequency headways while leaving the default
+  trip-start method unchanged. Supplying `reference_stops` restricts passage
+  coverage to route-directions that serve those stops.
 * **frequency feeds validated on real data.** `snapshot_frequencies()` was run
   end to end on a real NYC MTA GTFS-Realtime Trip Updates snapshot (a
   coordinate-complete 25-route Manhattan slice, 537 trips). All three

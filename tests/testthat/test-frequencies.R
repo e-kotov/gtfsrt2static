@@ -1,6 +1,6 @@
-# Scenario numbers are hand-worked in
-# private/gtfsrt2static-phase0-groundtruth.md (§5). Windowing/quantiles reuse
-# the summarise module already tested in test-summarise.R.
+# Scenario numbers are hand-worked from the synthetic fixtures.
+# Windowing/quantiles reuse the summarise module already tested in
+# test-summarise.R.
 
 clock_secs <- function(x) {
   p <- data.table::tstrsplit(x, ":", fixed = TRUE)
@@ -155,7 +155,164 @@ test_that("snapshot_frequencies rejects trips whose only timed rows are unserved
       make_events_skipped_only_trips(),
       windows = list(am = c("06:00", "09:00"))
     )),
-    "usable headway"
+    "trip-start headway"
+  )
+})
+
+test_that("snapshot_frequencies can use passage-derived headways", {
+  ev <- make_events_shared_trip_ref_passages()
+  win <- list(am = c("06:00", "09:00"))
+  expect_error(
+    suppressWarnings(snapshot_frequencies(ev, windows = win)),
+    "trip-start headway"
+  )
+
+  expect_warning(
+    feeds <- snapshot_frequencies(
+      ev,
+      windows = win,
+      quantiles = c(median = 0.5),
+      agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+      stops = freq_stops(),
+      headway_method = "passage",
+      reference_stops = "S1"
+    ),
+    "visited more than once"
+  )
+  expect_identical(names(feeds), "median")
+  expect_identical(feeds$median$frequencies$headway_secs, 750L)
+  expect_true(snapshot_publishable(feeds$median)$publishable)
+})
+
+test_that("snapshot_frequencies excludes unknown-direction passage groups", {
+  expect_warning(
+    expect_warning(
+      feeds <- snapshot_frequencies(
+        make_events_partly_unknown_direction(),
+        windows = list(am = c("06:00", "09:00")),
+        quantiles = c(median = 0.5),
+        agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+        stops = freq_stops(),
+        headway_method = "passage",
+        reference_stops = "S1"
+      ),
+      "unknown 'direction_id'"
+    ),
+    "visited more than once"
+  )
+  expect_identical(names(feeds), "median")
+
+  trips <- as.data.frame(feeds$median$trips)[, c(
+    "route_id",
+    "service_id",
+    "trip_id",
+    "direction_id"
+  ), drop = FALSE]
+  expect_identical(
+    trips,
+    data.frame(
+      route_id = "R36",
+      service_id = "SVC1",
+      trip_id = "R36_0_am",
+      direction_id = 0L,
+      stringsAsFactors = FALSE
+    )
+  )
+
+  frequencies <- as.data.frame(feeds$median$frequencies)[, c(
+    "trip_id",
+    "start_time",
+    "end_time",
+    "headway_secs",
+    "exact_times"
+  ), drop = FALSE]
+  expect_identical(
+    frequencies,
+    data.frame(
+      trip_id = "R36_0_am",
+      start_time = "06:00:00",
+      end_time = "09:00:00",
+      headway_secs = 600L,
+      exact_times = 0L,
+      stringsAsFactors = FALSE
+    )
+  )
+})
+
+test_that("snapshot_frequencies reports all-unknown passage directions", {
+  expect_warning(
+    expect_error(
+      snapshot_frequencies(
+        make_events_all_unknown_direction(),
+        windows = list(am = c("06:00", "09:00")),
+        quantiles = c(median = 0.5),
+        agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+        stops = freq_stops(),
+        headway_method = "passage",
+        reference_stops = "S1"
+      ),
+      "No direction-unique reference stop is available after excluding"
+    ),
+    "unknown 'direction_id'"
+  )
+})
+
+test_that("snapshot_frequencies default and explicit trip-start methods match", {
+  args <- list(
+    events = make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  default <- do.call(snapshot_frequencies, args)
+  explicit <- do.call(
+    snapshot_frequencies,
+    c(args, list(headway_method = "trip_start"))
+  )
+  expect_identical(
+    lapply(default, `[[`, "frequencies"),
+    lapply(explicit, `[[`, "frequencies")
+  )
+  expect_identical(
+    lapply(default, `[[`, "stop_times"),
+    lapply(explicit, `[[`, "stop_times")
+  )
+  expect_identical(
+    lapply(default, `[[`, "trips"),
+    lapply(explicit, `[[`, "trips")
+  )
+})
+
+test_that("snapshot_frequencies warns about ignored passage arguments", {
+  args <- list(
+    events = make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  expect_warning(
+    do.call(snapshot_frequencies, c(args, list(reference_stops = "S1"))),
+    "reference_stops"
+  )
+  expect_warning(
+    do.call(snapshot_frequencies, c(args, list(min_revisit_gap_s = 60L))),
+    "min_revisit_gap_s"
+  )
+})
+
+test_that("snapshot_frequencies reports passage-specific empty-headway errors", {
+  events <- snapshot_from_trip_updates(make_updates())
+  expect_warning(
+    expect_error(
+      snapshot_frequencies(
+        events,
+        windows = list(am = c("06:00", "09:00")),
+        headway_method = "passage",
+        reference_stops = "S1"
+      ),
+      "passage headway"
+    ),
+    "only one passage"
   )
 })
 
@@ -173,6 +330,6 @@ test_that("snapshot_frequencies validates its arguments", {
       make_events_degenerate()[route_ref == "R3"],
       windows = list(am = c("08:00", "10:00"))
     )),
-    "usable headway"
+    "trip-start headway"
   )
 })

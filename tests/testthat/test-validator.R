@@ -22,25 +22,7 @@ resolve_java <- function() {
   FALSE
 }
 
-validator_notices <- function(feed) {
-  zip <- tempfile(fileext = ".zip")
-  gtfsio::export_gtfs(feed, zip)
-  vdir <- tempfile()
-  dir.create(vdir)
-  gtfstools::download_validator(vdir)
-  jar <- list.files(vdir, pattern = "\\.jar$", full.names = TRUE)[1]
-  out <- tempfile()
-  gtfstools::validate_gtfs(
-    zip,
-    output_path = out,
-    validator_path = jar,
-    quiet = TRUE
-  )
-  report <- jsonlite::fromJSON(file.path(out, "report.json"))
-  report$notices
-}
-
-test_that("assembled feeds have no ERROR-level MobilityData validator notices", {
+skip_unless_validator_enabled <- function() {
   skip_on_cran()
   if (!nzchar(Sys.getenv("GTFSRT2STATIC_RUN_VALIDATOR"))) {
     skip(paste(
@@ -54,6 +36,40 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
   if (!resolve_java()) {
     skip("No Java runtime found; MobilityData validator cannot run.")
   }
+}
+
+validator_errors <- function(notices) {
+  if (is.null(notices) || length(notices) == 0L) {
+    return(character())
+  }
+  as.character(notices$code[notices$severity == "ERROR"])
+}
+
+validator_notices <- function(feed) {
+  zip <- tempfile(fileext = ".zip")
+  gtfsio::export_gtfs(feed, zip)
+  vdir <- tempfile()
+  dir.create(vdir)
+  gtfstools::download_validator(vdir)
+  jar <- list.files(vdir, pattern = "\\.jar$", full.names = TRUE)[1]
+  out <- tempfile()
+  old <- options(
+    parallelly.availableCores.methods = c("Slurm", "system", "fallback"),
+    parallelly.availableCores.fallback = 1L
+  )
+  on.exit(options(old), add = TRUE)
+  gtfstools::validate_gtfs(
+    zip,
+    output_path = out,
+    validator_path = jar,
+    quiet = TRUE
+  )
+  report <- jsonlite::fromJSON(file.path(out, "report.json"))
+  report$notices
+}
+
+test_that("assembled feeds have no ERROR-level MobilityData validator notices", {
+  skip_unless_validator_enabled()
 
   tz <- "America/New_York"
   # An overnight trip (crosses midnight -> exercises >24:00:00 encoding) plus a
@@ -106,11 +122,7 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
   expect_true(all(feed$trips$shape_id %in% feed$shapes$shape_id))
 
   notices <- validator_notices(feed)
-  errors <- if (is.null(notices) || length(notices) == 0L) {
-    character()
-  } else {
-    as.character(notices$code[notices$severity == "ERROR"])
-  }
+  errors <- validator_errors(notices)
 
   expect_identical(
     errors,
@@ -123,16 +135,7 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
 })
 
 test_that("frequency-based scenario feeds have no ERROR-level validator notices", {
-  skip_on_cran()
-  if (!nzchar(Sys.getenv("GTFSRT2STATIC_RUN_VALIDATOR"))) {
-    skip("Set GTFSRT2STATIC_RUN_VALIDATOR=1 to run the MobilityData validator.")
-  }
-  skip_if_not_installed("gtfstools")
-  skip_if_not_installed("jsonlite")
-  skip_if_offline()
-  if (!resolve_java()) {
-    skip("No Java runtime found; MobilityData validator cannot run.")
-  }
+  skip_unless_validator_enabled()
 
   feeds <- snapshot_frequencies(
     make_events_clean(),
@@ -147,15 +150,41 @@ test_that("frequency-based scenario feeds have no ERROR-level validator notices"
   )
   for (s in names(feeds)) {
     notices <- validator_notices(feeds[[s]])
-    errors <- if (is.null(notices) || length(notices) == 0L) {
-      character()
-    } else {
-      as.character(notices$code[notices$severity == "ERROR"])
-    }
+    errors <- validator_errors(notices)
     expect_identical(
       errors,
       character(),
       info = paste0(s, " validator ERRORs: ", paste(errors, collapse = ", "))
     )
   }
+})
+
+test_that("passage-based frequency feeds have no ERROR-level validator notices", {
+  skip_unless_validator_enabled()
+
+  feed <- suppressWarnings(
+    snapshot_frequencies(
+      make_events_shared_trip_ref_passages(),
+      windows = list(am = c("06:00", "09:00")),
+      quantiles = c(median = 0.5),
+      agency = list(name = "Test Transit", url = "https://example.org", timezone = "UTC"),
+      stops = data.frame(
+        stop_id = c("S1", "S2", "S3"),
+        stop_lat = c(40.71, 40.72, 40.73),
+        stop_lon = c(-74.01, -74.02, -74.03)
+      ),
+      route_type = 3L,
+      strict = TRUE,
+      headway_method = "passage",
+      reference_stops = "S1"
+    )
+  )$median
+
+  notices <- validator_notices(feed)
+  errors <- validator_errors(notices)
+  expect_identical(
+    errors,
+    character(),
+    info = paste("Passage validator ERROR notices:", paste(errors, collapse = ", "))
+  )
 })

@@ -82,6 +82,17 @@ if (getRversion() >= "2.15.1") {
     "thursday",
     "friday",
     "saturday",
-    "sunday"
+    "sunday",
+    "pattern_ref",
+    "vehicle_key",
+    "prev_arrival",
+    "new_passage",
+    "passage_id",
+    "reference_stop_ref",
+    "passage_time",
+    "n_directions",
+    "n_passages",
+    "shared_stop",
+    "n_events"
   ))
 }

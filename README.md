@@ -30,7 +30,7 @@ live endpoints ──rt_collect()──► daily .pb ZIPs
 |---|---|---|
 | collect | `rt_collect()`, `rt_rotate()`, `rt_coverage()`, `rt_service_template()` | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
 | events | `snapshot_from_trip_updates()`, `snapshot_from_stop_times()`, `validate_events()` | reduce observations to one row per trip × stop × service date, with provenance |
-| summarise | `obs_headways()`, `obs_travel_times()`, `obs_stop_order()`, `time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
+| summarise | `obs_headways()`, `obs_headways_by_passage()`, `obs_travel_times()`, `obs_stop_order()`, `time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
 | assemble | `snapshot_assemble()`, `snapshot_scaffold()`, `snapshot_frequencies()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed |
 
 ## Quick example
@@ -62,7 +62,19 @@ feeds <- snapshot_frequencies(
   agency  = list(name = "My Agency", url = "https://...", timezone = "America/New_York")
 )
 feeds$structural; feeds$median; feeds$reliable   # p05 / p50 / p95 feeds
+
+# If trip_ref is not per-run, estimate headways from reference-stop passages
+feeds <- snapshot_frequencies(
+  events,
+  windows = list(am_peak = c("06:00", "09:00"), midday = c("09:00", "16:00")),
+  stops   = stops_with_coords,
+  agency  = list(name = "My Agency", url = "https://...", timezone = "America/New_York"),
+  headway_method = "passage"
+)
 ```
+
+Supplying `reference_stops` restricts passage-headway output to
+route-directions that serve one of those stops.
 
 See `vignette("frequency-feeds")` for the frequency workflow end to end. On a
 real 25-route Manhattan MTA slice, the three feeds pass the MobilityData

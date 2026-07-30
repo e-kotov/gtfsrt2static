@@ -65,8 +65,21 @@ monotone_offsets <- function(travel, dwell) {
 #'   over the observed date range. Default \code{"SVC1"}.
 #' @param exact_times \code{frequencies.exact_times}: \code{0} (default,
 #'   frequency-based) or \code{1} (schedule-based).
-#' @param max_headway_secs Passed to \code{\link{obs_headways}}; gaps above it
-#'   are treated as between-service breaks. Default 10800 (3 h).
+#' @param max_headway_secs Passed to \code{\link{obs_headways}} or
+#'   \code{\link{obs_headways_by_passage}}; gaps above it are treated as
+#'   between-service breaks. Default 10800 (3 h).
+#' @param headway_method How to estimate headways. \code{"trip_start"}
+#'   (default) uses \code{\link{obs_headways}}, requiring one usable
+#'   \code{trip_ref} per run. \code{"passage"} uses
+#'   \code{\link{obs_headways_by_passage}}, measuring intervals at one
+#'   direction-unique reference stop per route-direction. This changes only
+#'   the frequency headway; representative travel-time patterns still come
+#'   from \code{\link{obs_travel_times}} and need events whose \code{trip_ref}
+#'   values make stop offsets meaningful.
+#' @param reference_stops,min_revisit_gap_s Passed to
+#'   \code{\link{obs_headways_by_passage}} when
+#'   \code{headway_method = "passage"}. Explicit values are ignored with a
+#'   warning when \code{headway_method = "trip_start"}.
 #' @return A named list of gtfsio-convention feed objects, one per quantile
 #'   (e.g. \code{$structural}, \code{$median}, \code{$reliable}); write each
 #'   with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
@@ -85,10 +98,31 @@ snapshot_frequencies <- function(
   feed_contact_email = NULL,
   feed_contact_url = NULL,
   strict = FALSE,
-  max_headway_secs = 3L * 3600L
+  max_headway_secs = 3L * 3600L,
+  headway_method = c("trip_start", "passage"),
+  reference_stops = NULL,
+  min_revisit_gap_s = 600L
 ) {
   dt <- validate_events(events)
   check_quantiles(quantiles)
+  headway_method <- match.arg(headway_method)
+  ignored_headway_args <- character()
+  if (identical(headway_method, "trip_start")) {
+    if (!missing(reference_stops)) {
+      ignored_headway_args <- c(ignored_headway_args, "reference_stops")
+    }
+    if (!missing(min_revisit_gap_s)) {
+      ignored_headway_args <- c(ignored_headway_args, "min_revisit_gap_s")
+    }
+    if (length(ignored_headway_args) > 0L) {
+      warning(
+        "'",
+        paste(ignored_headway_args, collapse = "', '"),
+        "' ignored when headway_method = \"trip_start\".",
+        call. = FALSE
+      )
+    }
+  }
   if (
     missing(windows) ||
       !is.list(windows) ||
@@ -108,13 +142,39 @@ snapshot_frequencies <- function(
   scen <- names(quantiles)
 
   # --- analytics (computed once, all scenarios) -----------------------------
-  hw <- obs_headways(dt, windows, quantiles, max_headway_secs)
+  hw <- if (identical(headway_method, "trip_start")) {
+    obs_headways(
+      dt,
+      windows = windows,
+      quantiles = quantiles,
+      max_headway_secs = max_headway_secs
+    )
+  } else {
+    obs_headways_by_passage(
+      dt,
+      reference_stops = reference_stops,
+      windows = windows,
+      quantiles = quantiles,
+      min_revisit_gap_s = min_revisit_gap_s,
+      max_headway_secs = max_headway_secs
+    )
+  }
   hw <- hw[window != "other"]
   tt <- obs_travel_times(dt, quantiles)
   if (nrow(hw) == 0L) {
+    if (identical(headway_method, "trip_start")) {
+      stop(
+        "No (route, direction, window) group has a usable trip-start ",
+        "headway; check that 'events' cover multiple runs inside the given ",
+        "windows.",
+        call. = FALSE
+      )
+    }
     stop(
-      "No (route, direction, window) group has a usable headway; check that ",
-      "'events' cover multiple runs inside the given windows.",
+      "No (route, direction, window) group has a usable passage headway; ",
+      "check that reference-stop events contain multiple passages inside the ",
+      "given windows, that input events preserve repeated visits, and that ",
+      "'min_revisit_gap_s' is below the true headway.",
       call. = FALSE
     )
   }

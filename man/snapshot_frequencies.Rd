@@ -17,7 +17,10 @@ snapshot_frequencies(
   feed_contact_email = NULL,
   feed_contact_url = NULL,
   strict = FALSE,
-  max_headway_secs = 3L * 3600L
+  max_headway_secs = 3L * 3600L,
+  headway_method = c("trip_start", "passage"),
+  reference_stops = NULL,
+  min_revisit_gap_s = 600L
 )
 }
 \arguments{
@@ -47,8 +50,23 @@ over the observed date range. Default \code{"SVC1"}.}
 \item{exact_times}{\code{frequencies.exact_times}: \code{0} (default,
 frequency-based) or \code{1} (schedule-based).}
 
-\item{max_headway_secs}{Passed to \code{\link{obs_headways}}; gaps above it
-are treated as between-service breaks. Default 10800 (3 h).}
+\item{max_headway_secs}{Passed to \code{\link{obs_headways}} or
+\code{\link{obs_headways_by_passage}}; gaps above it are treated as
+between-service breaks. Default 10800 (3 h).}
+
+\item{headway_method}{How to estimate headways. \code{"trip_start"}
+(default) uses \code{\link{obs_headways}}, requiring one usable
+\code{trip_ref} per run. \code{"passage"} uses
+\code{\link{obs_headways_by_passage}}, measuring intervals at one
+direction-unique reference stop per route-direction. This changes only
+the frequency headway; representative travel-time patterns still come
+from \code{\link{obs_travel_times}} and need events whose \code{trip_ref}
+values make stop offsets meaningful.}
+
+\item{reference_stops, min_revisit_gap_s}{Passed to
+\code{\link{obs_headways_by_passage}} when
+\code{headway_method = "passage"}. Explicit values are ignored with a
+warning when \code{headway_method = "trip_start"}.}
 }
 \value{
 A named list of gtfsio-convention feed objects, one per quantile
