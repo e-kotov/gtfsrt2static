@@ -76,9 +76,9 @@ feeds <- snapshot_frequencies(
 Supplying `reference_stops` restricts passage-headway output to
 route-directions that serve one of those stops.
 
-See `vignette("frequency-feeds")` for the frequency workflow end to end. On a
-real 25-route Manhattan MTA slice, the three feeds pass the MobilityData
-`gtfs-validator` (v6.0.0) with zero ERROR notices.
+See `vignette("frequency-feeds")` for the frequency workflow end to end. The
+opt-in validator test exercises representative frequency feeds with the
+MobilityData `gtfs-validator`.
 
 ## Installation
 

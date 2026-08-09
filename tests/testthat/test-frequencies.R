@@ -86,6 +86,25 @@ test_that("feed is referentially consistent and gtfsio-shaped", {
   expect_true(snapshot_publishable(f)$publishable)
 })
 
+test_that("monotone_offsets clamps, rounds, and propagates dwell", {
+  offsets <- monotone_offsets(
+    travel = c(-2.4, 10.6, 8.2, 11.2),
+    dwell = c(-0.4, 1.6, 3.4, 0.6)
+  )
+
+  expect_identical(offsets$arrival, c(0L, 11L, 13L, 16L))
+  expect_identical(offsets$departure, c(0L, 13L, 16L, 17L))
+  expect_identical(offsets$departure - offsets$arrival, c(0L, 2L, 3L, 1L))
+  expect_true(all(diff(offsets$arrival) >= 0L))
+  expect_true(all(diff(offsets$departure) >= 0L))
+})
+
+test_that("monotone_offsets validates its input vectors", {
+  expect_error(monotone_offsets(c(0, 1), 0), "equal length")
+  expect_error(monotone_offsets(c(0, NA), c(0, 1)), "finite numeric")
+  expect_error(monotone_offsets(c(0, Inf), c(0, 1)), "finite numeric")
+})
+
 test_that("monotonicity guard forces non-decreasing representative times", {
   # Ordered by median offset the p05 quantile is non-monotone (a downstream
   # stop has a smaller free-flow travel than an upstream one); the guard clamps.

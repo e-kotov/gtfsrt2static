@@ -1,4 +1,8 @@
-# gtfsrt2static 0.0.0.9001 (development version)
+# gtfsrt2static 0.1.0
+
+* **assemble (frequencies)**: `monotone_offsets()` is now exported. It rounds
+  travel and dwell offsets to integer seconds, clamps negative inputs to zero,
+  and ensures every arrival is no earlier than the preceding departure.
 
 * **summarise**: `obs_headways_by_passage()` estimates headways from successive
   vehicle passages at one direction-unique reference stop per route-direction.
@@ -13,12 +17,10 @@
   can opt into passage-derived frequency headways while leaving the default
   trip-start method unchanged. Supplying `reference_stops` restricts passage
   coverage to route-directions that serve those stops.
-* **frequency feeds validated on real data.** `snapshot_frequencies()` was run
-  end to end on a real NYC MTA GTFS-Realtime Trip Updates snapshot (a
-  coordinate-complete 25-route Manhattan slice, 537 trips). All three
-  reliability feeds pass the MobilityData `gtfs-validator` v6.0.0 with zero
-  ERROR notices; referential integrity, `stop_times` monotonicity, and the
-  publish gate were asserted programmatically.
+* **frequency feeds**: the opt-in validator test exercises representative
+  frequency feeds with the MobilityData `gtfs-validator`; referential
+  integrity, `stop_times` monotonicity, and the publish gate are also asserted
+  programmatically.
 * **vignette** `frequency-feeds` walks the frequency workflow from observed
   events to the three-quantile feeds, on both a self-contained synthetic
   example and a real bundled Trip Updates snapshot.

@@ -5,13 +5,41 @@
 # analytics and reuses the scaffold module's agency/stops/publish-gate helpers
 # for the spec-required surrounding files.
 
-#' Force a representative stop pattern to non-decreasing times.
+#' Make Stop-Time Offsets Monotone
 #'
-#' Travel offsets are clamped to >= 0 and made monotone with a forward pass so
-#' each stop's arrival is at least the previous stop's departure (the GTFS
-#' along-trip monotonicity rule), stricter than a bare cummax on travel time.
-#' @noRd
+#' Rounds travel and dwell offsets to integer seconds, clamps negative values
+#' to zero, and makes a stop pattern monotone with a forward pass.
+#'
+#' @param travel Numeric vector of arrival offsets from trip start, in seconds.
+#' @param dwell Numeric vector of dwell offsets, in seconds, with the same
+#'   length as `travel`.
+#' @return A list with integer vectors `arrival` and `departure`. Each
+#'   departure is its arrival plus its dwell, and each arrival is at least the
+#'   previous departure.
+#' @details Inputs must be finite numeric vectors of equal length. Values are
+#'   rounded with [base::round()] before negative values are clamped to zero.
+#'   For each stop, the returned arrival is the larger of its clamped travel
+#'   offset and the previous returned departure. This satisfies GTFS along-trip
+#'   monotonicity even when independently estimated offsets are out of order.
+#' @examples
+#' monotone_offsets(
+#'   travel = c(-2.4, 300.6, 298.2),
+#'   dwell = c(0, 30.6, 15)
+#' )
+#' @export
 monotone_offsets <- function(travel, dwell) {
+  if (
+    !is.numeric(travel) ||
+      !is.numeric(dwell) ||
+      length(travel) != length(dwell) ||
+      any(!is.finite(travel)) ||
+      any(!is.finite(dwell))
+  ) {
+    stop(
+      "'travel' and 'dwell' must be finite numeric vectors of equal length.",
+      call. = FALSE
+    )
+  }
   travel <- pmax(0L, as.integer(round(travel)))
   dwell <- pmax(0L, as.integer(round(dwell)))
   n <- length(travel)
