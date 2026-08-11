@@ -93,6 +93,21 @@ if (getRversion() >= "2.15.1") {
     "n_directions",
     "n_passages",
     "shared_stop",
-    "n_events"
+    "n_events",
+    "arr_s",
+    "dep_s",
+    "signature",
+    "n_stops",
+    "n_pattern_trips",
+    "template_trip_id",
+    "travel_base",
+    "dwell_base",
+    "ratio",
+    "scenario",
+    "pat_key",
+    "bad",
+    "n_sched_trips",
+    "override",
+    "start_s"
   ))
 }

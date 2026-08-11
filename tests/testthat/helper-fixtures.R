@@ -555,3 +555,164 @@ make_baseline <- function() {
     )
   )
 }
+
+# --- baseline (planned static feed) fixtures ---------------------------------
+# Built to join make_events_clean(): route "R1", direction 0, stops S1/S2/S3,
+# inside an "06:00"-"09:00" window. So a baseline-mode assembly is the observed
+# test with only the pattern source swapped, and the two are comparable.
+
+#' Baseline whose modal pattern is the 3-stop one, with hand-worked offsets.
+#'
+#' Five trips: T1/T2/T3 carry "S1>S2>S3", T4/T5 carry the 2-stop short turn
+#' "S1>S2", so the modal rule has a loser to reject (3 trips vs 2) and the
+#' template is T1 (lowest trip_id among the winners).
+#'
+#' stop_sequence is deliberately 4:6 / 4:5 - neither 1-based nor gapless - so
+#' dense renumbering is exercised. route_type is 0 (tram), not 3 (bus), so a
+#' leaked scaffold default fails loudly instead of coincidentally matching.
+#'
+#' T1 offsets rebased on its first departure (06:00:00):
+#'   travel_base = c(-30L, 120L, 270L), dwell_base = c(30L, 30L, 30L)
+#' First departures 06:00/06:10/06:25/06:35/06:50 -> gaps 600/900/600/900,
+#' so the planned headway median is 750L - distinct from every observed headway
+#' of make_events_clean() (612/720/1044), which lets the headway-override test
+#' discriminate.
+make_baseline_freq <- function() {
+  st <- function(trip, stops, arrivals, departures) {
+    data.frame(
+      trip_id = trip,
+      arrival_time = arrivals,
+      departure_time = departures,
+      stop_id = stops,
+      stop_sequence = seq(4L, length.out = length(stops)),
+      stringsAsFactors = FALSE
+    )
+  }
+  three <- c("S1", "S2", "S3")
+  two <- c("S1", "S2")
+  list(
+    agency = data.frame(
+      agency_id = "AGB",
+      agency_name = "Baseline Transit",
+      agency_url = "https://baseline-transit.org",
+      agency_timezone = "UTC"
+    ),
+    stops = data.frame(
+      stop_id = three,
+      stop_name = c("Stop 1", "Stop 2", "Stop 3"),
+      stop_lat = c(40.71, 40.72, 40.73),
+      stop_lon = c(-74.01, -74.02, -74.03)
+    ),
+    routes = data.frame(
+      route_id = "R1",
+      agency_id = "AGB",
+      route_short_name = "1",
+      route_long_name = "Baseline Line",
+      route_type = 0L
+    ),
+    trips = data.frame(
+      route_id = "R1",
+      service_id = "weekday",
+      trip_id = c("T1", "T2", "T3", "T4", "T5"),
+      direction_id = 0L,
+      stringsAsFactors = FALSE
+    ),
+    stop_times = rbind(
+      st("T1", three, c("05:59:30", "06:02:00", "06:04:30"),
+         c("06:00:00", "06:02:30", "06:05:00")),
+      st("T2", three, c("06:09:30", "06:12:00", "06:14:30"),
+         c("06:10:00", "06:12:30", "06:15:00")),
+      st("T3", three, c("06:24:30", "06:27:00", "06:29:30"),
+         c("06:25:00", "06:27:30", "06:30:00")),
+      st("T4", two, c("06:34:30", "06:37:00"), c("06:35:00", "06:37:30")),
+      st("T5", two, c("06:49:30", "06:52:00"), c("06:50:00", "06:52:30"))
+    ),
+    calendar = data.frame(
+      service_id = "weekday",
+      monday = 1, tuesday = 1, wednesday = 1, thursday = 1, friday = 1,
+      saturday = 0, sunday = 0,
+      start_date = 20260101L,
+      end_date = 20261231L
+    )
+  )
+}
+
+#' Baseline trips.txt with no direction_id column at all.
+make_baseline_no_direction <- function() {
+  b <- make_baseline_freq()
+  b$trips$direction_id <- NULL
+  b
+}
+
+#' Baseline exercising each modal tie-break level in isolation.
+#'
+#' TIE1: equal trip counts (1 each), so "more stops" decides -> "S1>S2>S3".
+#' TIE2: equal counts AND equal stop counts, so lexicographic decides ->
+#'   "S1>S2" beats "S1>S3".
+#'
+#' In both routes the *losing* signature is carried by the alphabetically
+#' earlier trip_id, so a rule that accidentally sorted on trip_id would pick
+#' the wrong pattern and fail.
+make_baseline_tied_patterns <- function() {
+  st <- function(trip, stops, base_min) {
+    n <- length(stops)
+    mins <- base_min + seq(0L, length.out = n, by = 2L)
+    data.frame(
+      trip_id = trip,
+      arrival_time = sprintf("07:%02d:00", mins),
+      departure_time = sprintf("07:%02d:30", mins),
+      stop_id = stops,
+      stop_sequence = seq_len(n),
+      stringsAsFactors = FALSE
+    )
+  }
+  list(
+    trips = data.frame(
+      route_id = c("TIE1", "TIE1", "TIE2", "TIE2"),
+      trip_id = c("A1", "B1", "A2", "B2"),
+      direction_id = 0L,
+      stringsAsFactors = FALSE
+    ),
+    stop_times = rbind(
+      st("A1", c("S1", "S2"), 0L),               # loser: fewer stops
+      st("B1", c("S1", "S2", "S3"), 10L),        # winner: more stops
+      st("A2", c("S1", "S3"), 20L),              # loser: later lexicographically
+      st("B2", c("S1", "S2"), 30L)               # winner: "S1>S2" < "S1>S3"
+    )
+  )
+}
+
+#' Baseline where the 3-stop trips have a blank non-timepoint arrival.
+#'
+#' T2/T3 keep complete times, T1 loses one, so T1 is excluded from candidacy
+#' and the template becomes T2 - the modal rule picking among fully timed trips
+#' rather than erroring on the one it would otherwise have chosen.
+make_baseline_partial_times <- function() {
+  b <- make_baseline_freq()
+  b$stop_times$arrival_time[
+    b$stop_times$trip_id == "T1" & b$stop_times$stop_id == "S2"
+  ] <- NA_character_
+  b
+}
+
+#' Long per-cell ratio table for snapshot_frequencies(scaling=).
+#'
+#' Keyed the way the argument is: one row per (route, direction, window,
+#' scenario). `ratio` is recycled across the scenarios given.
+make_scaling <- function(
+  scenarios,
+  ratio,
+  route_ref = "R1",
+  direction_id = 0L,
+  window = "am_peak"
+) {
+  grid <- expand.grid(
+    route_ref = route_ref,
+    direction_id = direction_id,
+    window = window,
+    scenario = scenarios,
+    stringsAsFactors = FALSE
+  )
+  grid$ratio <- rep_len(ratio, nrow(grid))
+  grid
+}

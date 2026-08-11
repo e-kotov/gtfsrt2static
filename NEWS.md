@@ -1,3 +1,78 @@
+# gtfsrt2static 0.2.0
+
+Frequency feeds can now be **anchored on a published static feed** instead of
+reconstructed from observations, and travel-time and headway scenarios can be
+specified independently. Together these let a scheduled-versus-observed contrast
+hold the network fixed, so it measures service and not network differences.
+
+* **assemble (frequencies)**: `snapshot_frequencies(quantiles=)` accepts a named
+  *list* as well as a named numeric, so a scenario can carry separate `travel`
+  and `headway` probabilities - e.g.
+  `list(structural = c(travel = 0.05, headway = 0.50))`, a free-flow running time
+  at a typical frequency. A bare named numeric still means "the same probability
+  for both", so existing calls and the default are unchanged. An omitted side
+  inherits the side that is given. `quantiles` remains the single source of
+  scenario identity in every mode.
+
+* **baseline**: `baseline_patterns()` reduces a planned static feed to one
+  canonical stop pattern per `(route, direction)` - the signature carried by the
+  most trips, tie-broken on more stops then lexicographically, with the lowest
+  `trip_id` among the winners as the template. Offsets are rebased on the
+  template's **first departure** (so `travel_base` is negative at the origin) and
+  `stop_sequence` is renumbered densely from 1. Trips are excluded from candidacy
+  when `direction_id` is `NA` or a time is missing, so the modal rule picks among
+  fully timed trips rather than erroring on the one it would have chosen;
+  `direction_id` is read from `trips.txt` and never inferred from a `trip_id`
+  convention.
+
+* **assemble (frequencies)**: `snapshot_frequencies(pattern_source = "baseline",
+  baseline=, scaling=)` emits the published pattern scaled by a per-cell
+  running-time ratio, as one representative trip plus a `frequencies.txt`
+  headway. `scaling` is keyed
+  `(route_ref, direction_id, window, scenario)`; ratios must be finite and
+  strictly positive and are **not** clamped, since plausibility bounds belong to
+  whatever estimated them. Ratios are resolved for the whole trip x scenario grid
+  *before* any feed is built, so a cell missing a ratio leaves every scenario and
+  all feeds keep one shared trip set - `scaling_missing` chooses between erroring
+  (default) and dropping. Offsets are resolved once per distinct
+  `(pattern, ratio)` pair rather than per trip, which keeps the work proportional
+  to the patterns rather than to the emitted rows.
+
+  In this mode the baseline supplies the defaults for `agency` and `stops` and its
+  `routes` rows are inherited, so the emitted `route_type` stays the operator's
+  own instead of the scaffolded 3 (bus); explicit arguments still win, and
+  inherited values go through the same publish-blocker path. `calendar` and
+  `shapes` are deliberately not inherited.
+
+* **baseline**: `baseline_headways()` gives the planned feed's own headways per
+  `(route, direction, window)` from its scheduled departure gaps, and
+  `snapshot_frequencies(headways=)` injects them as a per-cell override. Together
+  these express a "scheduled" scenario - published running times *and* published
+  frequency - which no combination of observed quantiles could produce. Unlike
+  `obs_headways()` there is no within-day grouping, since a static feed has no
+  service dates.
+
+* **frequency feeds**: the opt-in MobilityData validator test now covers a
+  four-scenario baseline-anchored build (scheduled / structural / median /
+  reliable over two windows), asserting the shared trip set across all four feeds
+  and zero ERROR-severity notices from `gtfs-validator` v6.0.0 for each. It passes
+  no `agency`/`stops`/`route_type`, so it exercises baseline inheritance under
+  `strict = TRUE` rather than only the scaling arithmetic.
+
+* **docs**: `snapshot_frequencies()` and `obs_stop_order()` now state when to
+  **reconstruct** a pattern from observations and when to **anchor** on a
+  published one, and note that `obs_stop_order()`'s median-offset rule is the
+  same rule a GPS-only pattern builder would use - so a pipeline can slide from
+  anchored to reconstructed with no visible signal. The `frequency-feeds`
+  vignette gains an "Anchoring on a planned static feed" section.
+
+* **known divergence**: at the origin stop, `monotone_offsets()` keeps the scaled
+  origin dwell, so `departure_time` there is `dwell * ratio` rather than
+  `00:00:00`. Every stop after the first is unaffected: in any valid baseline the
+  second arrival is at or after the first departure, so the monotone forward pass
+  never binds. Downstream code that reimplemented this by flattening the origin
+  departure to zero will see that one field differ.
+
 # gtfsrt2static 0.1.0
 
 * **assemble (frequencies)**: `monotone_offsets()` is now exported. It rounds

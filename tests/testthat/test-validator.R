@@ -159,6 +159,70 @@ test_that("frequency-based scenario feeds have no ERROR-level validator notices"
   }
 })
 
+test_that("baseline-anchored frequency feeds have no ERROR-level validator notices", {
+  skip_unless_validator_enabled()
+
+  # Four scenarios over two windows, the shape the anchored mode exists for:
+  # a planned "scheduled" feed at published running times and frequency, plus
+  # three observed ones. Agency, stops and routes are inherited from the
+  # baseline, so nothing is passed explicitly here - which is also what makes
+  # this a test of the inheritance path, not just of the arithmetic.
+  windows <- list(early = c("06:00", "06:15"), later = c("06:15", "09:00"))
+  baseline <- make_baseline_freq()
+  scenarios <- c("scheduled", "structural", "median", "reliable")
+  ratios <- c(scheduled = 1, structural = 0.87, median = 1.05, reliable = 1.31)
+
+  scaling <- do.call(rbind, lapply(names(windows), function(w) {
+    grid <- make_scaling(scenarios, 1, window = w)
+    grid$ratio <- as.numeric(ratios[grid$scenario])
+    grid
+  }))
+  sched <- baseline_headways(baseline, windows = windows)
+  sched$scenario <- "scheduled"
+
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = windows,
+    quantiles = list(
+      scheduled = c(headway = 0.50),
+      structural = c(travel = 0.05, headway = 0.50),
+      median = c(travel = 0.50, headway = 0.50),
+      reliable = c(travel = 0.95, headway = 0.95)
+    ),
+    baseline = baseline,
+    pattern_source = "baseline",
+    scaling = scaling,
+    headways = sched,
+    strict = TRUE
+  )
+  expect_identical(names(feeds), scenarios)
+
+  # The invariant the whole design rests on: every scenario emits the same
+  # trips over the same stops in the same order, so a contrast between two
+  # feeds is a contrast in service levels and nothing else.
+  ref <- feeds$median
+  for (s in scenarios) {
+    expect_identical(sort(feeds[[s]]$trips$trip_id), sort(ref$trips$trip_id))
+    expect_identical(
+      feeds[[s]]$stop_times[order(trip_id, stop_sequence)]$stop_id,
+      ref$stop_times[order(trip_id, stop_sequence)]$stop_id
+    )
+  }
+
+  for (s in scenarios) {
+    notices <- validator_notices(feeds[[s]])
+    errors <- validator_errors(notices)
+    expect_identical(
+      errors,
+      character(),
+      info = paste0(
+        "Baseline-anchored ", s, " validator ERRORs: ",
+        paste(errors, collapse = ", ")
+      )
+    )
+  }
+})
+
 test_that("passage-based frequency feeds have no ERROR-level validator notices", {
   skip_unless_validator_enabled()
 

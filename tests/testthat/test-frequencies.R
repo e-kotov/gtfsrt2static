@@ -15,6 +15,13 @@ freq_stops <- function() {
   )
 }
 
+# make_events_clean() runs start 06:00/06:10/06:22/06:40. Splitting at 06:15
+# puts two runs (one headway) in each window, which is the minimum that gives
+# both windows a trip of its own.
+two_windows <- function() {
+  list(early = c("06:00", "06:15"), later = c("06:15", "09:00"))
+}
+
 test_that("snapshot_frequencies emits one feed per scenario with exact numbers", {
   feeds <- snapshot_frequencies(
     make_events_clean(),
@@ -351,4 +358,410 @@ test_that("snapshot_frequencies validates its arguments", {
     )),
     "trip-start headway"
   )
+})
+
+# --- FR-2: decoupled travel and headway quantiles ---------------------------
+
+test_that("quantiles can decouple travel time from headway", {
+  # The point of the list form: a free-flow running time at a *typical*
+  # frequency. Coupled quantiles cannot express this - a p05 travel time would
+  # drag a p05 headway (612) along with it.
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = list(
+      structural = c(travel = 0.05, headway = 0.50),
+      median = c(travel = 0.50, headway = 0.50),
+      reliable = c(travel = 0.95, headway = 0.95)
+    ),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  # structural and median now share the p50 headway...
+  expect_identical(feeds$structural$frequencies$headway_secs, 720L)
+  expect_identical(feeds$median$frequencies$headway_secs, 720L)
+  expect_identical(feeds$reliable$frequencies$headway_secs, 1044L)
+  # ...while their travel times still differ (p05 vs p50).
+  expect_identical(
+    clock_secs(feeds$structural$stop_times[order(stop_sequence)]$arrival_time),
+    c(0L, 283L, 583L)
+  )
+  expect_identical(
+    clock_secs(feeds$median$stop_times[order(stop_sequence)]$arrival_time),
+    c(0L, 310L, 625L)
+  )
+})
+
+test_that("quantiles decouple in the other direction too", {
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = list(mixed = c(travel = 0.05, headway = 0.95)),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  expect_identical(feeds$mixed$frequencies$headway_secs, 1044L)
+  expect_identical(
+    clock_secs(feeds$mixed$stop_times[order(stop_sequence)]$arrival_time),
+    c(0L, 283L, 583L)
+  )
+})
+
+test_that("a coupled list is identical to the bare numeric form", {
+  args <- list(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  bare <- do.call(
+    snapshot_frequencies,
+    c(args, list(quantiles = c(structural = 0.05, median = 0.5)))
+  )
+  listed <- do.call(
+    snapshot_frequencies,
+    c(args, list(quantiles = list(structural = 0.05, median = 0.5)))
+  )
+  # An omitted side inherits the given one, so this is also identical.
+  inherited <- do.call(
+    snapshot_frequencies,
+    c(args, list(quantiles = list(
+      structural = c(travel = 0.05),
+      median = c(headway = 0.5)
+    )))
+  )
+  for (scenario in c("structural", "median")) {
+    for (tbl in names(bare[[scenario]])) {
+      expect_equal(listed[[scenario]][[tbl]], bare[[scenario]][[tbl]])
+      expect_equal(inherited[[scenario]][[tbl]], bare[[scenario]][[tbl]])
+    }
+  }
+})
+
+test_that("all scenario feeds share one trip set", {
+  # The fixture's runs start 06:00/06:10/06:22/06:40, so this boundary is what
+  # actually splits them into two populated windows (one gap each).
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = two_windows(),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  ref <- feeds$median
+  for (f in feeds) {
+    expect_identical(sort(f$trips$trip_id), sort(ref$trips$trip_id))
+    expect_identical(
+      sort(unique(f$stop_times$trip_id)),
+      sort(unique(ref$stop_times$trip_id))
+    )
+    expect_identical(sort(f$frequencies$trip_id), sort(ref$frequencies$trip_id))
+  }
+})
+
+test_that("resolve_quantiles rejects malformed scenario quantiles", {
+  ev <- make_events_clean()
+  win <- list(am = c("06:00", "09:00"))
+  bad <- function(q) {
+    expect_error(snapshot_frequencies(ev, windows = win, quantiles = q))
+  }
+  bad(list())
+  bad(list(0.5))
+  bad(list(a = c(travle = 0.5)))
+  bad(list(a = c(travel = 0.5, headway = 1.5)))
+  bad(list(a = "0.5"))
+  bad(c(a = 0.5, a = 0.6))
+  expect_error(
+    snapshot_frequencies(
+      ev,
+      windows = win,
+      quantiles = data.frame(a = 0.5)
+    ),
+    "data.frame"
+  )
+})
+
+# --- FR-1: baseline-anchored patterns ---------------------------------------
+
+anchored_feeds <- function(scenarios, ratio, ...) {
+  snapshot_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = stats::setNames(rep(0.5, length(scenarios)), scenarios),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    scaling = make_scaling(scenarios, ratio),
+    ...
+  )
+}
+
+test_that("baseline mode reproduces the planned pattern at ratio 1", {
+  f <- anchored_feeds("median", 1)$median
+  st <- f$stop_times[order(stop_sequence)]
+  # The published pattern, rebased on its first departure and clamped.
+  expect_identical(clock_secs(st$arrival_time), c(0L, 120L, 270L))
+  expect_identical(clock_secs(st$departure_time), c(30L, 150L, 300L))
+  # Dense stop_sequence from the fixture's 4:6.
+  expect_identical(st$stop_sequence, 1:3)
+  expect_identical(st$stop_id, c("S1", "S2", "S3"))
+  # The headway is still observed: only the pattern source changed.
+  expect_identical(f$frequencies$headway_secs, 720L)
+  expect_identical(f$trips$trip_id, "R1_0_am_peak")
+})
+
+test_that("baseline mode scales offsets by the ratio exactly", {
+  doubled <- anchored_feeds("median", 2)$median$stop_times[order(stop_sequence)]
+  expect_identical(clock_secs(doubled$arrival_time), c(0L, 240L, 540L))
+  expect_identical(clock_secs(doubled$departure_time), c(60L, 300L, 600L))
+
+  halved <- anchored_feeds("median", 0.5)$median$stop_times[order(stop_sequence)]
+  expect_identical(clock_secs(halved$arrival_time), c(0L, 60L, 135L))
+  expect_identical(clock_secs(halved$departure_time), c(15L, 75L, 150L))
+})
+
+test_that("baseline ratios vary independently by window and by scenario", {
+  scaling <- rbind(
+    make_scaling("fast", 1, window = "early"),
+    make_scaling("fast", 2, window = "later"),
+    make_scaling("slow", 3, window = "early"),
+    make_scaling("slow", 4, window = "later")
+  )
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = two_windows(),
+    quantiles = c(fast = 0.5, slow = 0.5),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    scaling = scaling
+  )
+  last_arrival <- function(f, trip) {
+    st <- f$stop_times[trip_id == trip][order(stop_sequence)]
+    clock_secs(st$arrival_time[nrow(st)])
+  }
+  # 270 s of planned running time scaled by each cell's own ratio: four
+  # distinct values prove the pattern is resolved per trip, not per route.
+  expect_identical(last_arrival(feeds$fast, "R1_0_early"), 270L)
+  expect_identical(last_arrival(feeds$fast, "R1_0_later"), 540L)
+  expect_identical(last_arrival(feeds$slow, "R1_0_early"), 810L)
+  expect_identical(last_arrival(feeds$slow, "R1_0_later"), 1080L)
+  # ...and the trip set is still shared.
+  expect_identical(sort(feeds$fast$trips$trip_id), sort(feeds$slow$trips$trip_id))
+})
+
+test_that("trips sharing a pattern and ratio resolve once, without fan-out", {
+  # Two windows, same ratio: internally both trips map to a single scaled
+  # pattern (the offsets are resolved per distinct pattern-ratio pair, not per
+  # trip). This pins that the de-duplication neither drops nor duplicates rows.
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = two_windows(),
+    quantiles = c(median = 0.5),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    scaling = rbind(
+      make_scaling("median", 1.5, window = "early"),
+      make_scaling("median", 1.5, window = "later")
+    )
+  )
+  st <- feeds$median$stop_times
+  expect_identical(sort(unique(st$trip_id)), c("R1_0_early", "R1_0_later"))
+  # exactly 3 stops per trip, no cartesian blow-up
+  expect_identical(nrow(st), 6L)
+  expect_identical(as.integer(table(st$trip_id)), c(3L, 3L))
+  # both trips carry the same scaled offsets: 270 * 1.5 = 405
+  for (trip in unique(st$trip_id)) {
+    one <- st[trip_id == trip][order(stop_sequence)]
+    expect_identical(clock_secs(one$arrival_time), c(0L, 180L, 405L))
+    expect_identical(clock_secs(one$departure_time), c(45L, 225L, 450L))
+  }
+})
+
+test_that("baseline mode inherits agency, stops and real route_type", {
+  # No agency= or stops= given: a complete baseline supplies both, so there is
+  # nothing left to block publication.
+  f <- anchored_feeds("median", 1)$median
+  expect_true(snapshot_publishable(f)$publishable)
+  expect_identical(f$agency$agency_name, "Baseline Transit")
+  expect_identical(f$agency$agency_id, "AGB")
+  expect_true(all(!is.na(f$stops$stop_lat)))
+  # route_type 0 (tram) inherited, not the scaffold's 3 (bus).
+  expect_identical(f$routes$route_type, 0L)
+  expect_identical(f$routes$agency_id, "AGB")
+  # calendar still describes the observed span, not the baseline's calendar.
+  expect_identical(f$calendar$tuesday, 1L)
+  expect_identical(f$calendar$saturday, 0L)
+})
+
+test_that("an explicit agency and stops still win over the baseline", {
+  f <- anchored_feeds(
+    "median",
+    1,
+    agency = list(name = "Override", url = "https://o.org", timezone = "UTC")
+  )$median
+  expect_identical(f$agency$agency_name, "Override")
+  # routes keep referential integrity against the single emitted agency
+  expect_identical(unique(f$routes$agency_id), unique(f$agency$agency_id))
+})
+
+test_that("baseline mode is referentially consistent", {
+  f <- anchored_feeds(c("a", "b"), 1)$a
+  expect_s3_class(f, "gtfs")
+  expect_true(all(f$stop_times$stop_id %in% f$stops$stop_id))
+  expect_true(all(f$stop_times$trip_id %in% f$trips$trip_id))
+  expect_true(all(f$frequencies$trip_id %in% f$trips$trip_id))
+  expect_true(all(f$trips$route_id %in% f$routes$route_id))
+  expect_true(all(f$trips$service_id %in% f$calendar$service_id))
+})
+
+test_that("baseline mode rejects incoherent argument combinations", {
+  ev <- make_events_clean()
+  win <- list(am_peak = c("06:00", "09:00"))
+  expect_error(
+    snapshot_frequencies(ev, windows = win, pattern_source = "baseline"),
+    "needs a 'baseline'"
+  )
+  expect_error(
+    snapshot_frequencies(
+      ev,
+      windows = win,
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline"
+    ),
+    "needs 'scaling'"
+  )
+  expect_error(
+    snapshot_frequencies(ev, windows = win, baseline = make_baseline_freq()),
+    "pattern_source is \"observed\""
+  )
+  expect_error(
+    snapshot_frequencies(
+      ev,
+      windows = win,
+      scaling = make_scaling("median", 1)
+    ),
+    "only applies to"
+  )
+})
+
+test_that("scaling is validated per cell", {
+  bad <- function(scaling, regexp) {
+    expect_error(
+      snapshot_frequencies(
+        make_events_clean(),
+        windows = list(am_peak = c("06:00", "09:00")),
+        quantiles = c(median = 0.5),
+        baseline = make_baseline_freq(),
+        pattern_source = "baseline",
+        scaling = scaling
+      ),
+      regexp
+    )
+  }
+  bad(make_scaling("median", 0), "strictly greater than 0")
+  bad(make_scaling("median", -1), "strictly greater than 0")
+  bad(make_scaling("median", NA_real_), "strictly greater than 0")
+  bad(make_scaling("median", Inf), "strictly greater than 0")
+  bad(make_scaling("typo", 1), "quantiles' does not define")
+  bad(make_scaling("median", 1, window = "nope"), "windows' does not define")
+  bad(rbind(make_scaling("median", 1), make_scaling("median", 2)), "duplicate")
+  bad(make_scaling("median", 1)[0, ], "no rows")
+  bad(make_scaling("median", 1)[, c("route_ref", "ratio")], "Missing required")
+})
+
+test_that("a missing scaling cell errors, or drops from every scenario", {
+  ev <- make_events_clean()
+  # "later" has no ratio for scenario b.
+  scaling <- rbind(
+    make_scaling(c("a", "b"), 1, window = "early"),
+    make_scaling("a", 1, window = "later")
+  )
+  call_it <- function(...) {
+    snapshot_frequencies(
+      ev,
+      windows = two_windows(),
+      quantiles = c(a = 0.5, b = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      scaling = scaling,
+      ...
+    )
+  }
+  expect_error(call_it(), "no ratio for")
+  expect_warning(feeds <- call_it(scaling_missing = "drop"), "dropped from every")
+  # The incomplete cell leaves *both* feeds, so the trip sets stay identical.
+  expect_identical(feeds$a$trips$trip_id, "R1_0_early")
+  expect_identical(feeds$b$trips$trip_id, "R1_0_early")
+})
+
+test_that("a disjoint route identity is a dedicated error", {
+  b <- make_baseline_freq()
+  b$trips$route_id <- "OTHER"
+  b$routes$route_id <- "OTHER"
+  expect_error(
+    snapshot_frequencies(
+      make_events_clean(),
+      windows = list(am_peak = c("06:00", "09:00")),
+      quantiles = c(median = 0.5),
+      baseline = b,
+      pattern_source = "baseline",
+      scaling = make_scaling("median", 1)
+    ),
+    "No \\(route, direction\\) key is shared"
+  )
+})
+
+# --- Phase 4: the planned "scheduled" scenario ------------------------------
+
+test_that("headways= overrides the observed quantile for named cells only", {
+  windows <- list(am_peak = c("06:00", "09:00"))
+  sh <- baseline_headways(make_baseline_freq(), windows = windows)
+  sh$scenario <- "scheduled"
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = windows,
+    quantiles = list(scheduled = c(headway = 0.5), median = 0.5),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    scaling = make_scaling(c("scheduled", "median"), 1)
+  , headways = sh)
+  # scheduled takes the planned headway; median keeps the observed one.
+  expect_identical(feeds$scheduled$frequencies$headway_secs, 750L)
+  expect_identical(feeds$median$frequencies$headway_secs, 720L)
+  # Both still share the trip set and the planned pattern.
+  expect_identical(feeds$scheduled$trips$trip_id, feeds$median$trips$trip_id)
+  expect_identical(
+    feeds$scheduled$stop_times$arrival_time,
+    feeds$median$stop_times$arrival_time
+  )
+})
+
+test_that("headways= is validated and ignores cells that are not emitted", {
+  windows <- list(am_peak = c("06:00", "09:00"))
+  base_call <- function(headways) {
+    snapshot_frequencies(
+      make_events_clean(),
+      windows = windows,
+      quantiles = c(median = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      scaling = make_scaling("median", 1),
+      headways = headways
+    )
+  }
+  ok <- data.frame(
+    route_ref = "R1", direction_id = 0L, window = "am_peak",
+    scenario = "median", headway_secs = 999L
+  )
+  expect_identical(base_call(ok)$median$frequencies$headway_secs, 999L)
+
+  bad_scen <- ok
+  bad_scen$scenario <- "nope"
+  expect_error(base_call(bad_scen), "does not define")
+
+  nonpositive <- ok
+  nonpositive$headway_secs <- 0L
+  expect_error(base_call(nonpositive), "positive whole number")
+
+  unknown <- ok
+  unknown$route_ref <- "ZZ"
+  expect_warning(base_call(unknown), "not\n?\\s*emitted|not emitted")
 })

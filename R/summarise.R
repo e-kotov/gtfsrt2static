@@ -77,6 +77,174 @@ check_quantiles <- function(quantiles) {
   invisible(quantiles)
 }
 
+#' Split the Scenario Quantile Argument into Travel and Headway Probabilities
+#'
+#' The frequency assembler needs one probability per scenario for travel time
+#' and, independently, one for headway: a "structural" free-flow scenario is
+#' typically p05 running time at the \emph{median} headway, not a p05 headway.
+#' This resolves both accepted spellings of that argument into two probability
+#' vectors carrying the \strong{same names in the same order}, which is what
+#' lets the assembler keep addressing scenarios by name alone
+#' (\code{travel_<name>} / \code{headway_<name>}).
+#'
+#' Accepted forms:
+#' \itemize{
+#'   \item a named numeric - one probability per scenario, used for both sides
+#'     (the historical form, so existing callers and the default are unchanged);
+#'   \item a named list whose elements are either a single probability (coupled
+#'     for that scenario) or a numeric named \code{travel} and/or
+#'     \code{headway}. A side that is absent inherits the side that is present,
+#'     so \code{c(headway = 0.5)} is a legal shorthand for a scenario whose
+#'     travel times do not come from an observed quantile at all (baseline
+#'     mode).
+#' }
+#'
+#' Range validation is delegated to `check_quantiles()` on each resolved vector
+#' so its error messages stay identical whichever form was supplied.
+#' @return A list with `scenarios` (character), `travel` and `headway` (named
+#'   numeric vectors, identically named and ordered).
+#' @noRd
+resolve_quantiles <- function(quantiles, arg = "quantiles") {
+  # A data.frame is a list, so the list branch below would reach into its
+  # columns and report a baffling element-shape error. Reject it up front.
+  if (inherits(quantiles, "data.frame")) {
+    stop(
+      "'",
+      arg,
+      "' must be a named numeric vector or a named list, not a data.frame.",
+      call. = FALSE
+    )
+  }
+
+  if (is.numeric(quantiles)) {
+    check_quantiles(quantiles)
+    check_unique_scenarios(names(quantiles), arg)
+    return(list(
+      scenarios = names(quantiles),
+      travel = quantiles,
+      headway = quantiles
+    ))
+  }
+
+  if (
+    !is.list(quantiles) ||
+      length(quantiles) == 0L ||
+      is.null(names(quantiles)) ||
+      any(!nzchar(names(quantiles)))
+  ) {
+    stop(
+      "'",
+      arg,
+      "' must be a non-empty *named* numeric vector, e.g. ",
+      "c(median = 0.5, p95 = 0.95), or a non-empty *named* list, e.g. ",
+      "list(structural = c(travel = 0.05, headway = 0.5)).",
+      call. = FALSE
+    )
+  }
+  scen <- names(quantiles)
+  check_unique_scenarios(scen, arg)
+
+  # Per scenario, resolve the (travel, headway) pair. Anything that is not a
+  # bare probability or a travel/headway-named numeric is rejected naming the
+  # offending scenario - a mistyped side name is otherwise silent.
+  pair <- function(x, s) {
+    if (!is.numeric(x) && !is.list(x)) {
+      stop(
+        "'",
+        arg,
+        "[[\"",
+        s,
+        "\"]]' must be a single probability, or a numeric named 'travel' ",
+        "and/or 'headway'.",
+        call. = FALSE
+      )
+    }
+    x <- unlist(x, use.names = TRUE)
+    if (!is.numeric(x)) {
+      stop(
+        "'",
+        arg,
+        "[[\"",
+        s,
+        "\"]]' must be numeric.",
+        call. = FALSE
+      )
+    }
+    nm <- names(x)
+    if (length(x) == 1L && (is.null(nm) || !nzchar(nm))) {
+      return(c(travel = x[[1L]], headway = x[[1L]]))
+    }
+    if (is.null(nm) || any(!nzchar(nm)) || !all(nm %in% c("travel", "headway"))) {
+      stop(
+        "'",
+        arg,
+        "[[\"",
+        s,
+        "\"]]' must be a single probability, or a numeric named 'travel' ",
+        "and/or 'headway'; got ",
+        if (is.null(nm)) {
+          paste0(length(x), " unnamed value(s)")
+        } else {
+          paste0("name(s) '", paste(nm, collapse = "', '"), "'")
+        },
+        ".",
+        call. = FALSE
+      )
+    }
+    if (anyDuplicated(nm) > 0L) {
+      stop(
+        "'",
+        arg,
+        "[[\"",
+        s,
+        "\"]]' names 'travel'/'headway' more than once.",
+        call. = FALSE
+      )
+    }
+    # An absent side inherits the present one, so a scenario can name only the
+    # side that is actually used (see the baseline-mode note above).
+    tr <- if ("travel" %in% nm) x[["travel"]] else x[["headway"]]
+    hw <- if ("headway" %in% nm) x[["headway"]] else x[["travel"]]
+    c(travel = tr, headway = hw)
+  }
+
+  pairs <- lapply(scen, function(s) pair(quantiles[[s]], s))
+  travel <- stats::setNames(
+    vapply(pairs, function(p) p[["travel"]], numeric(1L)),
+    scen
+  )
+  headway <- stats::setNames(
+    vapply(pairs, function(p) p[["headway"]], numeric(1L)),
+    scen
+  )
+  check_quantiles(travel)
+  check_quantiles(headway)
+  list(scenarios = scen, travel = travel, headway = headway)
+}
+
+#' Reject duplicate scenario names
+#'
+#' Scenario names address feed elements and analytics columns
+#' (\code{travel_<name>}), so a duplicate would silently collide instead of
+#' producing two feeds. Enforced only here, not in `check_quantiles()`, whose
+#' leaf callers must keep their current contract.
+#' @noRd
+check_unique_scenarios <- function(scen, arg) {
+  dup <- unique(scen[duplicated(scen)])
+  if (length(dup) > 0L) {
+    stop(
+      "'",
+      arg,
+      "' has duplicate scenario name(s): '",
+      paste(dup, collapse = "', '"),
+      "'. Each name becomes one feed and one column suffix, so they must be ",
+      "unique.",
+      call. = FALSE
+    )
+  }
+  invisible(scen)
+}
+
 #' Validate a positive scalar seconds argument
 #' @noRd
 check_positive_seconds <- function(x, arg) {
@@ -258,6 +426,20 @@ time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) {
 #' converters already produce: when passages disagree on order (e.g. several
 #' stops share an arrival second), per-trip chronology is ambiguous but the
 #' median offset is not.
+#'
+#' @section Reconstructed versus anchored stop patterns:
+#' This function \strong{reconstructs} a stop order from the observations, which
+#' is what you want when no usable published pattern exists. It is the wrong
+#' tool when one does exist and an analysis depends on the network being
+#' identical across the scenarios being compared: the order here is derived from
+#' what was observed, so different observations can yield different stop sets,
+#' and a scheduled-versus-observed contrast then confounds "service changed"
+#' with "the network changed". For that design, \strong{anchor} on the published
+#' pattern with \code{\link{baseline_patterns}} and vary only service levels.
+#'
+#' Worth knowing how easily the two are confused: the median-offset rule below
+#' is the same rule a GPS-only pattern builder would use, so a pipeline can slide
+#' from anchored to reconstructed without any visible signal.
 #'
 #' @param events Observed stop events (see \link{observed-stop-events}).
 #' @return A data.table with one row per served \code{(route_ref, direction_id,

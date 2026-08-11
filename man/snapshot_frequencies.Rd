@@ -20,7 +20,13 @@ snapshot_frequencies(
   max_headway_secs = 3L * 3600L,
   headway_method = c("trip_start", "passage"),
   reference_stops = NULL,
-  min_revisit_gap_s = 600L
+  min_revisit_gap_s = 600L,
+  baseline = NULL,
+  pattern_source = c("observed", "baseline"),
+  scaling = NULL,
+  scaling_missing = c("error", "drop"),
+  headways = NULL,
+  route_key = c("route_id", "route_short_name")
 )
 }
 \arguments{
@@ -34,9 +40,27 @@ such as \code{c("22:00", "26:00")} are supported). Required: a
 frequency-based feed needs defined windows. Trips outside every window are
 not emitted.}
 
-\item{quantiles}{Named numeric vector of reliability quantiles in
-\code{[0, 1]}; one feed is produced per entry, named by its name. Default
-\code{c(structural = 0.05, median = 0.5, reliable = 0.95)}.}
+\item{quantiles}{Reliability quantiles in \code{[0, 1]}; one feed is produced
+per entry, named by its name. Two spellings are accepted:
+\itemize{
+\item a \strong{named numeric vector} - one probability per scenario,
+applied to both travel time and headway. Default
+\code{c(structural = 0.05, median = 0.5, reliable = 0.95)}.
+\item a \strong{named list} whose elements are either a single
+probability (coupled, as above) or a numeric named \code{travel} and/or
+\code{headway}, which \strong{decouples} the two. A side that is
+omitted inherits the side that is given. This is what expresses a
+free-flow scenario at typical frequency, e.g.
+\code{list(structural = c(travel = 0.05, headway = 0.50),
+    median = 0.50, reliable = 0.95)} - a p05 running time at the
+\emph{median} headway, not a p05 headway.
+}
+\code{quantiles} is the single source of scenario identity in every mode:
+its names define which feeds are emitted, and \code{scaling}/\code{headways}
+may only refer to those names. Under
+\code{pattern_source = "baseline"} the \code{travel} side is inert (the
+pattern comes from \code{baseline} scaled by \code{scaling}), so a scenario
+may give only \code{c(headway = ...)}.}
 
 \item{agency, stops, route_type, feed_lang, feed_contact_email, feed_contact_url, strict}{As in \code{\link{snapshot_scaffold}} - agency metadata, stop coordinates,
 route type, feed language/contacts, and the strict publish gate. Missing
@@ -67,12 +91,70 @@ values make stop offsets meaningful.}
 \code{\link{obs_headways_by_passage}} when
 \code{headway_method = "passage"}. Explicit values are ignored with a
 warning when \code{headway_method = "trip_start"}.}
+
+\item{baseline}{Optional planned static GTFS feed to anchor stop patterns on:
+a gtfsio/gtfstools-style object or a path to a GTFS zip. Required with
+\code{pattern_source = "baseline"} and rejected without it.
+
+Its \code{agency} and \code{stops} become the defaults for those arguments
+(an explicit value still wins) and its \code{routes} rows are inherited so
+the emitted \code{route_type} stays the operator's own rather than the
+scaffold default. \code{calendar} and \code{shapes} are deliberately
+\emph{not} inherited: the calendar describes planned service while this feed
+describes the observed span, and the representative trips reference no
+baseline shape.
+
+\strong{Identity contract:} \code{events$route_ref} must carry the same
+identifier as the baseline's \code{trips.route_id} (or
+\code{routes.route_short_name} under \code{route_key}), and
+\code{direction_id} must agree. A completely disjoint key set is an error;
+observed keys with no baseline pattern are dropped with a warning, and
+baseline routes with no observed headway are reported and skipped rather
+than given an invented headway.}
+
+\item{pattern_source}{Where the representative stop pattern comes from.
+\code{"observed"} (default) reconstructs it from \code{events} via
+\code{\link{obs_travel_times}}. \code{"baseline"} anchors on the published
+pattern from \code{baseline} (see \code{\link{baseline_patterns}}) and
+scales it by \code{scaling}, so every scenario emits the same stops in the
+same order. See the section above for which regime fits.}
+
+\item{scaling}{Running-time ratios, required with
+\code{pattern_source = "baseline"}. A data.frame with one row per
+\code{route_ref}, \code{direction_id}, \code{window}, \code{scenario} and a
+\code{ratio} column: the factor by which that scenario stretches the
+planned stop-to-stop offsets (1 keeps them unchanged, 1.2 is 20\\% slower).
+Ratios must be finite and strictly positive; they are not clamped, so any
+plausibility bounds belong to whatever estimated them. \code{scenario}
+values must be names of \code{quantiles}.}
+
+\item{scaling_missing}{What to do when \code{scaling} has no ratio for an
+emitted \code{(route, direction, window, scenario)} cell. \code{"error"}
+(default) reports the offending cells. \code{"drop"} removes those trips
+from \strong{every} scenario, with a warning - never from just the scenario
+that lacks a ratio, which would leave the feeds with different trip sets.}
+
+\item{headways}{Optional per-cell headway override: a data.frame keyed
+\code{route_ref}, \code{direction_id}, \code{window}, \code{scenario} with a
+positive \code{headway_secs}. It supersedes the quantile-derived headway for
+exactly the cells it lists; unlisted cells keep their observed value. This
+is how a scenario whose frequency does not come from observations at all -
+a planned "scheduled" feed, via \code{\link{baseline_headways}} - is
+expressed without a second way of naming scenarios. Rows naming a cell that
+is not emitted are ignored with a warning.}
+
+\item{route_key}{Which baseline column supplies route identity, passed to
+\code{\link{baseline_patterns}}. Baseline mode only.}
 }
 \value{
 A named list of gtfsio-convention feed objects, one per quantile
 (e.g. \code{$structural}, \code{$median}, \code{$reliable}); write each
 with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
 \code{publish_blockers} attributes (see \code{\link{snapshot_publishable}}).
+
+All scenario feeds share one trip set by construction: \code{trip_id} is
+\code{route_direction_window} and is resolved once, before any scenario is
+built, so a contrast between two feeds is a contrast in service levels only.
 }
 \description{
 Collapses many observed runs into compact, frequency-based schedules: one
@@ -80,8 +162,10 @@ representative trip per \code{(route, direction, window)} with a
 \code{frequencies.txt} headway and a representative stop pattern, emitted at
 several reliability quantiles. The typical output is three feeds -
 \code{structural} (free-flow, p05), \code{median} (p50), and \code{reliable}
-(p95) - each applying its quantile to \strong{both} travel time and headway,
-so the reliable feed is slower with longer headways than the structural one.
+(p95). By default each applies its quantile to \strong{both} travel time and
+headway, so the reliable feed is slower with longer headways than the
+structural one; pass a list to \code{quantiles} to decouple the two (see
+below).
 }
 \details{
 The representative stop_times are offsets from a \code{00:00:00} trip start
@@ -90,3 +174,21 @@ clamped non-decreasing. Spec-required surrounding files (agency, routes,
 stops, calendar, feed_info) and the publish gate are built exactly as
 \code{\link{snapshot_scaffold}} builds them.
 }
+\section{Reconstructed versus anchored stop patterns}{
+
+This function \strong{reconstructs} a representative stop pattern from the
+observations themselves, via \code{\link{obs_travel_times}} and the canonical
+cross-trip order of \code{\link{obs_stop_order}}. That is the right regime
+when no usable published pattern exists - GPS-only data, an operator with no
+static feed, or a network whose published patterns do not match what runs.
+
+It is the \emph{wrong} regime when a published pattern does exist and the
+analysis rests on the network being identical across scenarios. Because the
+reconstructed stop set is derived from what was observed, two feeds built
+from different observations can differ in their stops and stop order, and a
+scheduled-versus-observed contrast then confounds "service got slower" with
+"the network changed". For that design, \strong{anchor} on the published
+pattern instead and vary only service levels: see
+\code{\link{baseline_patterns}} and \code{pattern_source = "baseline"}.
+}
+

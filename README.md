@@ -31,6 +31,7 @@ live endpoints ──rt_collect()──► daily .pb ZIPs
 | collect | `rt_collect()`, `rt_rotate()`, `rt_coverage()`, `rt_service_template()` | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
 | events | `snapshot_from_trip_updates()`, `snapshot_from_stop_times()`, `validate_events()` | reduce observations to one row per trip × stop × service date, with provenance |
 | summarise | `obs_headways()`, `obs_headways_by_passage()`, `obs_travel_times()`, `obs_stop_order()`, `time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
+| baseline | `baseline_patterns()`, `baseline_headways()` | reduce a *planned* static feed to one canonical stop pattern per route-direction, and to its own scheduled headways |
 | assemble | `snapshot_assemble()`, `snapshot_scaffold()`, `snapshot_frequencies()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed |
 
 ## Quick example
@@ -75,6 +76,40 @@ feeds <- snapshot_frequencies(
 
 Supplying `reference_stops` restricts passage-headway output to
 route-directions that serve one of those stops.
+
+### Anchoring on a planned feed
+
+The calls above *reconstruct* the stop pattern from the observations. When the
+operator publishes a usable feed, anchor on it instead: the stops and their order
+come from the timetable, and only a running-time ratio and a headway vary per
+route and window. Every scenario then emits an identical trip set, so a
+scheduled-versus-observed contrast measures service rather than network
+differences.
+
+```r
+sched <- baseline_headways(static, windows = windows)
+sched$scenario <- "scheduled"
+
+feeds <- snapshot_frequencies(
+  events,
+  windows = windows,
+  quantiles = list(
+    scheduled  = c(headway = 0.50),                 # travel side unused
+    structural = c(travel = 0.05, headway = 0.50),  # free-flow at typical frequency
+    median     = c(travel = 0.50, headway = 0.50),
+    reliable   = c(travel = 0.95, headway = 0.95)
+  ),
+  baseline = static,
+  pattern_source = "baseline",
+  scaling  = ratios,   # ratio per route/direction/window/scenario, yours to estimate
+  headways = sched
+)
+```
+
+`quantiles` accepts a list so travel time and headway can differ per scenario;
+a bare named numeric still applies one probability to both. See
+`vignette("frequency-feeds")` for the identity contract between `events` and the
+baseline.
 
 See `vignette("frequency-feeds")` for the frequency workflow end to end. The
 opt-in validator test exercises representative frequency feeds with the

@@ -25,10 +25,28 @@ collapses *many* observed runs of a route-direction into a compact,
 - **median** (p50): a typical day,
 - **reliable** (p95): a slow, worst-case upper bound.
 
-The same quantile is applied to *both* travel time and headway, so the reliable
-feed is slower and less frequent than the structural one. This is the shape you
-want for accessibility and reliability analysis, where you compare routing under
-optimistic, typical, and pessimistic service.
+By default the same quantile is applied to *both* travel time and headway, so the
+reliable feed is slower and less frequent than the structural one. This is the
+shape you want for accessibility and reliability analysis, where you compare
+routing under optimistic, typical, and pessimistic service.
+
+That default is a convenience, not a constraint. Passing a *list* instead of a
+numeric vector decouples the two sides, which matters as soon as a scenario is
+not simply "everything optimistic": a free-flow running time at a *typical*
+frequency is a common estimand, and coupling would drag a p05 headway along with
+the p05 travel time.
+
+```r
+quantiles = list(
+  structural = c(travel = 0.05, headway = 0.50),  # free-flow, typical frequency
+  median     = 0.50,                              # still coupled - shorthand
+  reliable   = 0.95
+)
+```
+
+An omitted side inherits the one you gave, so `c(headway = 0.5)` is legal for a
+scenario whose travel times do not come from an observed quantile at all — see
+the anchored section at the end.
 
 ```{r setup}
 library(gtfsrt2static)
@@ -197,3 +215,79 @@ notices**; the residual notices are the WARNINGs expected for a historical,
 prediction-heavy single snapshot (fast-travel data-quality signals, an expired
 calendar). The resulting feeds are ordinary GTFS zips that `gtfstools`,
 `tidytransit`, and any other GTFS tool read directly.
+
+## Anchoring on a planned static feed
+
+Everything above **reconstructs** the stop pattern from the observations. That is
+right when no usable published pattern exists. But it has a consequence worth
+being explicit about: because the stops and their order are derived from what was
+observed, two feeds built from different observations can differ in their
+*networks*, not just their service levels. If you then compare accessibility
+between a scheduled and an observed feed, "service got slower" is confounded with
+"the network changed".
+
+When the operator does publish a usable feed, anchor on it instead. Set
+`pattern_source = "baseline"` and the stop pattern comes from the published
+`stop_times` — one canonical (modal) pattern per route-direction, chosen by
+`baseline_patterns()` — with only two numbers varying per route and window: a
+**running-time ratio** and a **headway**. Every scenario then emits the identical
+trip set over the identical stops.
+
+```{r anchored, eval = FALSE}
+static <- gtfsio::import_gtfs("path/to/operator_static.zip")
+windows <- list(am_peak = c("06:00", "09:00"), interpeak = c("09:00", "16:00"))
+
+# Running-time ratios you estimated yourself: observed duration relative to
+# planned, per route, direction, window and scenario. The package does not
+# estimate these - the definition of "duration", the coverage gates and any
+# plausibility bounds belong with whoever measured them.
+ratios <- data.frame(
+  route_ref = "B62", direction_id = 0L, window = "am_peak",
+  scenario = c("scheduled", "structural", "median", "reliable"),
+  ratio = c(1.00, 0.87, 1.05, 1.31)
+)
+
+# The "scheduled" scenario's frequency comes from the timetable itself, not from
+# observations, so take it off the planned feed and inject it as an override.
+sched <- baseline_headways(static, windows = windows)
+sched$scenario <- "scheduled"
+
+feeds <- snapshot_frequencies(
+  events,
+  windows = windows,
+  quantiles = list(
+    scheduled  = c(headway = 0.50),                 # travel side unused here
+    structural = c(travel = 0.05, headway = 0.50),
+    median     = c(travel = 0.50, headway = 0.50),
+    reliable   = c(travel = 0.95, headway = 0.95)
+  ),
+  baseline = static,
+  pattern_source = "baseline",
+  scaling = ratios,
+  headways = sched
+)
+```
+
+Three things to know about this mode:
+
+- **`events` is still required.** Only the pattern source changes; headways, the
+  calendar's weekdays and the feed's date range still come from the observations.
+- **The travel side of `quantiles` is inert.** The pattern is the published one
+  scaled by `ratio`, so `obs_travel_times()` is never called. `quantiles` still
+  defines *which* scenarios exist — it stays the single source of scenario
+  identity, and `scaling`/`headways` may only refer to its names.
+- **The trip set is shared by construction.** Ratios are resolved for the whole
+  (trip × scenario) grid before any feed is built, so a cell missing a ratio
+  leaves *every* scenario rather than just the one that lacks it. That is what
+  `scaling_missing` controls, and why its default is to error rather than quietly
+  produce feeds you cannot compare.
+
+The identity contract is the thing to get right: `events$route_ref` must carry the
+same identifier as the baseline's `trips.route_id` (or `routes.route_short_name`,
+via `route_key`), and `direction_id` must agree. A completely disjoint key set is
+an error naming examples from both sides.
+
+One incidental advantage: a route that visits the same stop twice (a loop, or a
+branch that doubles back) is handled correctly here, because the pattern is a
+literal published trip. The reconstructing path collapses repeated visits into one
+position and warns about it.

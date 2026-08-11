@@ -29,3 +29,19 @@ converters already produce: when passages disagree on order (e.g. several
 stops share an arrival second), per-trip chronology is ambiguous but the
 median offset is not.
 }
+\section{Reconstructed versus anchored stop patterns}{
+
+This function \strong{reconstructs} a stop order from the observations, which
+is what you want when no usable published pattern exists. It is the wrong
+tool when one does exist and an analysis depends on the network being
+identical across the scenarios being compared: the order here is derived from
+what was observed, so different observations can yield different stop sets,
+and a scheduled-versus-observed contrast then confounds "service changed"
+with "the network changed". For that design, \strong{anchor} on the published
+pattern with \code{\link{baseline_patterns}} and vary only service levels.
+
+Worth knowing how easily the two are confused: the median-offset rule below
+is the same rule a GPS-only pattern builder would use, so a pipeline can slide
+from anchored to reconstructed without any visible signal.
+}
+
