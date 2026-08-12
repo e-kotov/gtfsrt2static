@@ -111,6 +111,29 @@ a bare named numeric still applies one probability to both. See
 `vignette("frequency-feeds")` for the identity contract between `events` and the
 baseline.
 
+### Mixing in individually-timed trips
+
+Real service is not purely frequency-based. Per the GTFS specification only trips
+listed in `frequencies.txt` are frequency-based, and the rest are read from
+`stop_times` as exact scheduled times — so a cell that cannot be written as a
+repeating headway is carried as an ordinary timed trip. `extra_trips=` takes
+those, keyed by scenario, with absolute clock times and no `frequencies.txt` row:
+
+```r
+feeds <- snapshot_frequencies(
+  events,
+  windows = windows,
+  stops   = stops_with_coords,
+  extra_trips = list(median = list(trips = my_trips, stop_times = my_stop_times))
+)
+```
+
+A scenario may supply more, fewer or no extra trips than another: exact-time
+evidence legitimately differs by scenario, so no cross-scenario invariant is
+imposed on them. They are not rows of `snapshot_grid()` — the grid is one row per
+candidate cell — so reconcile `trips.txt` against the emitted cells plus the ids
+you supplied.
+
 See `vignette("frequency-feeds")` for the frequency workflow end to end. The
 opt-in validator test exercises representative frequency feeds with the
 MobilityData `gtfs-validator`.

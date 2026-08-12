@@ -26,7 +26,8 @@ snapshot_frequencies(
   scaling = NULL,
   scaling_missing = c("error", "drop"),
   headways = NULL,
-  route_key = c("route_id", "route_short_name")
+  route_key = c("route_id", "route_short_name"),
+  extra_trips = NULL
 )
 }
 \arguments{
@@ -145,6 +146,52 @@ is not emitted are ignored with a warning.}
 
 \item{route_key}{Which baseline column supplies route identity, passed to
 \code{\link{baseline_patterns}}. Baseline mode only.}
+
+\item{extra_trips}{Optional individually-timed trips to add to the emitted
+feeds, as a \strong{named list keyed by scenario name} - the same names as
+\code{quantiles}, which is the single source of scenario identity, so a
+misspelled scenario is an error rather than a silent no-op. Each element is
+a \code{list(trips=, stop_times=)}:
+\itemize{
+\item \code{trips}: required \code{trip_id} and \code{route_id}; optional
+\code{direction_id} and \code{service_id}. An absent \code{service_id}
+is stamped with this feed's single synthesized service; a different one
+is an error.
+\item \code{stop_times}: required \code{trip_id}, \code{arrival_time},
+\code{departure_time}, \code{stop_id}, \code{stop_sequence}. Times are
+\strong{absolute clock strings} (\code{"HH:MM:SS"}, hours >= 24 allowed
+for trips running past midnight), \emph{not} offsets from
+\code{00:00:00} as the generated frequency trips use, and must be
+non-decreasing along the trip.
+}
+Any other element of the list is ignored, so a builder that also returns
+provenance can be passed through unchanged.
+
+These trips get \strong{no \code{frequencies.txt} row}. That is what makes
+them exact-time trips: per the GTFS specification only trips listed in
+\code{frequencies.txt} are frequency-based, and the rest are read from
+\code{stop_times} as scheduled times. A feed may mix the two, so this is a
+standard-compliant feed, not a workaround - it is how a cell that cannot be
+expressed as a repeating headway is carried.
+
+Their stops and routes are added to \code{stops.txt} and \code{routes.txt},
+but every referenced \code{stop_id} must already be known (from \code{stops}
+or an emitted pattern) and every \code{route_id} must be an emitted or
+baseline route: a dangling reference is an invalid feed and is rejected
+rather than filled in. No extra \code{trip_id} may collide with a generated
+\code{route_direction_window} id.
+
+\strong{No cross-scenario invariant is imposed.} A scenario may supply more,
+fewer or no extra trips than another, because the exact-time evidence for a
+cell legitimately differs by scenario. The shared-trip-set guarantee below
+is scoped to the \emph{generated frequency} trips, which is where
+\code{scaling_missing} enforces it.
+
+Extra trips are \strong{not} rows of \code{\link{snapshot_grid}}: the grid
+is one row per candidate \code{(route, direction, window)} cell and extra
+trips are not cells. Reconciling a feed's \code{trips.txt} therefore means
+\code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
+supplies the extra trips, so it already owns those ids.}
 }
 \value{
 A named list of gtfsio-convention feed objects, one per quantile
@@ -152,9 +199,11 @@ A named list of gtfsio-convention feed objects, one per quantile
 with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
 \code{publish_blockers} attributes (see \code{\link{snapshot_publishable}}).
 
-All scenario feeds share one trip set by construction: \code{trip_id} is
-\code{route_direction_window} and is resolved once, before any scenario is
-built, so a contrast between two feeds is a contrast in service levels only.
+All scenario feeds share one \emph{generated} trip set by construction:
+\code{trip_id} is \code{route_direction_window} and is resolved once, before
+any scenario is built, so a contrast between two feeds is a contrast in
+service levels only. Trips added through \code{extra_trips} are outside that
+guarantee by design and may differ per scenario.
 
 The list carries a \code{resolved_grid} attribute: one row per candidate
 \code{(route, direction, window)} and scenario, recording the ratio and

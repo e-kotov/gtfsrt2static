@@ -192,14 +192,61 @@ monotone_offsets <- function(travel, dwell) {
 #'   is not emitted are ignored with a warning.
 #' @param route_key Which baseline column supplies route identity, passed to
 #'   \code{\link{baseline_patterns}}. Baseline mode only.
+#' @param extra_trips Optional individually-timed trips to add to the emitted
+#'   feeds, as a \strong{named list keyed by scenario name} - the same names as
+#'   \code{quantiles}, which is the single source of scenario identity, so a
+#'   misspelled scenario is an error rather than a silent no-op. Each element is
+#'   a \code{list(trips=, stop_times=)}:
+#'   \itemize{
+#'     \item \code{trips}: required \code{trip_id} and \code{route_id}; optional
+#'       \code{direction_id} and \code{service_id}. An absent \code{service_id}
+#'       is stamped with this feed's single synthesized service; a different one
+#'       is an error.
+#'     \item \code{stop_times}: required \code{trip_id}, \code{arrival_time},
+#'       \code{departure_time}, \code{stop_id}, \code{stop_sequence}. Times are
+#'       \strong{absolute clock strings} (\code{"HH:MM:SS"}, hours >= 24 allowed
+#'       for trips running past midnight), \emph{not} offsets from
+#'       \code{00:00:00} as the generated frequency trips use, and must be
+#'       non-decreasing along the trip.
+#'   }
+#'   Any other element of the list is ignored, so a builder that also returns
+#'   provenance can be passed through unchanged.
+#'
+#'   These trips get \strong{no \code{frequencies.txt} row}. That is what makes
+#'   them exact-time trips: per the GTFS specification only trips listed in
+#'   \code{frequencies.txt} are frequency-based, and the rest are read from
+#'   \code{stop_times} as scheduled times. A feed may mix the two, so this is a
+#'   standard-compliant feed, not a workaround - it is how a cell that cannot be
+#'   expressed as a repeating headway is carried.
+#'
+#'   Their stops and routes are added to \code{stops.txt} and \code{routes.txt},
+#'   but every referenced \code{stop_id} must already be known (from \code{stops}
+#'   or an emitted pattern) and every \code{route_id} must be an emitted or
+#'   baseline route: a dangling reference is an invalid feed and is rejected
+#'   rather than filled in. No extra \code{trip_id} may collide with a generated
+#'   \code{route_direction_window} id.
+#'
+#'   \strong{No cross-scenario invariant is imposed.} A scenario may supply more,
+#'   fewer or no extra trips than another, because the exact-time evidence for a
+#'   cell legitimately differs by scenario. The shared-trip-set guarantee below
+#'   is scoped to the \emph{generated frequency} trips, which is where
+#'   \code{scaling_missing} enforces it.
+#'
+#'   Extra trips are \strong{not} rows of \code{\link{snapshot_grid}}: the grid
+#'   is one row per candidate \code{(route, direction, window)} cell and extra
+#'   trips are not cells. Reconciling a feed's \code{trips.txt} therefore means
+#'   \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
+#'   supplies the extra trips, so it already owns those ids.
 #' @return A named list of gtfsio-convention feed objects, one per quantile
 #'   (e.g. \code{$structural}, \code{$median}, \code{$reliable}); write each
 #'   with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
 #'   \code{publish_blockers} attributes (see \code{\link{snapshot_publishable}}).
 #'
-#'   All scenario feeds share one trip set by construction: \code{trip_id} is
-#'   \code{route_direction_window} and is resolved once, before any scenario is
-#'   built, so a contrast between two feeds is a contrast in service levels only.
+#'   All scenario feeds share one \emph{generated} trip set by construction:
+#'   \code{trip_id} is \code{route_direction_window} and is resolved once, before
+#'   any scenario is built, so a contrast between two feeds is a contrast in
+#'   service levels only. Trips added through \code{extra_trips} are outside that
+#'   guarantee by design and may differ per scenario.
 #'
 #'   The list carries a \code{resolved_grid} attribute: one row per candidate
 #'   \code{(route, direction, window)} and scenario, recording the ratio and
@@ -231,7 +278,8 @@ snapshot_frequencies <- function(
   scaling = NULL,
   scaling_missing = c("error", "drop"),
   headways = NULL,
-  route_key = c("route_id", "route_short_name")
+  route_key = c("route_id", "route_short_name"),
+  extra_trips = NULL
 ) {
   dt <- validate_events(events)
   q <- resolve_quantiles(quantiles)
@@ -303,6 +351,10 @@ snapshot_frequencies <- function(
     stop("'exact_times' must be 0 or 1.", call. = FALSE)
   }
   scen <- q$scenarios
+  # Shape-checked here, before any analytics run, so a malformed caller table
+  # fails immediately. Its references are checked later, once the generated trip
+  # ids and the emitted stop/route sets exist.
+  extra <- check_extra_trips(extra_trips, scen, service_id)
 
   # --- analytics (computed once, all scenarios) -----------------------------
   # Travel and headway probabilities are resolved separately (see
@@ -489,13 +541,47 @@ snapshot_frequencies <- function(
       unique(grp[, paste(route_ref, direction_id)]),
     stop_ref
   ]))
+  route_ids <- unique(as.character(grp$route_id))
+
+  # Extra trips are not grid cells, but they are rows of the emitted feed, so
+  # they have to widen the two derivations that are *filtered* to the frequency
+  # material: build_stops_table() keeps only 'stop_ids', and routes.txt is built
+  # from the observed route set. Without this their stops silently vanish from
+  # stops.txt and their route reference dangles.
+  if (!is.null(extra)) {
+    check_extra_trips_refs(
+      extra,
+      generated_trip_ids = as.character(cells$trip_id),
+      pattern_stop_ids = stop_ids,
+      known_stop_ids = if (is.null(stops)) {
+        character()
+      } else {
+        as.character(data.table::as.data.table(stops)$stop_id)
+      },
+      known_route_ids = unique(c(
+        route_ids,
+        if (anchored && !is.null(baseline$routes)) {
+          as.character(data.table::as.data.table(baseline$routes)$route_id)
+        } else {
+          character()
+        }
+      ))
+    )
+    extra_stops <- unlist(lapply(extra, function(e) e$stop_times$stop_id))
+    stop_ids <- sort(unique(c(stop_ids, as.character(extra_stops))))
+    # Appended rather than re-sorted: routes.txt row order is the observed route
+    # order, and an unused extra_trips argument must not perturb it.
+    extra_routes <- unlist(lapply(extra, function(e) e$trips$route_id))
+    route_ids <- c(route_ids, setdiff(unique(as.character(extra_routes)), route_ids))
+  }
+
   stops_out <- build_stops_table(stop_ids, stops, emit, strict)
   blockers <- sink$blockers()
 
   # Inherited routes keep the operator's real route_type; scaffolding them as 3
   # would silently mislabel a tram or metro line.
   routes <- baseline_routes_table(
-    route_ids = unique(grp$route_id),
+    route_ids = route_ids,
     baseline_routes = if (anchored) baseline$routes else NULL,
     feed_agency_id = agency_id,
     route_type = route_type,
@@ -582,12 +668,27 @@ snapshot_frequencies <- function(
     freq <- freq[!is.na(headway_secs) & headway_secs > 0L]
 
     trips_emitted <- trips_out[trip_id %in% unique(stop_times$trip_id)]
+
+    # Extra trips join trips.txt and stop_times.txt only. They deliberately get
+    # no frequencies.txt row - that is what makes them exact-time trips - and
+    # they are appended after 'built' is derived below, because they are not
+    # grid cells and must not appear in the resolved grid.
+    trips_final <- trips_emitted
+    stop_times_final <- stop_times
+    ex <- extra[[s]]
+    if (!is.null(ex)) {
+      trips_final <- rbind(trips_final, ex$trips)
+      data.table::setorderv(trips_final, c("route_id", "service_id", "trip_id"))
+      stop_times_final <- rbind(stop_times_final, ex$stop_times)
+      data.table::setorderv(stop_times_final, c("trip_id", "stop_sequence"))
+    }
+
     feed <- list(
       agency = agency_tbl,
       stops = stops_out,
       routes = routes,
-      trips = trips_emitted,
-      stop_times = stop_times,
+      trips = trips_final,
+      stop_times = stop_times_final,
       frequencies = freq,
       calendar = calendar,
       feed_info = feed_info
@@ -632,6 +733,412 @@ snapshot_frequencies <- function(
   out <- lapply(out, `[[`, "feed")
   attr(out, "resolved_grid") <- grid
   out
+}
+
+#' Validate the optional per-scenario extra-trip tables (shape and values)
+#'
+#' Runs once, before the scenario loop, so a malformed table fails before any
+#' feed is built. Mirrors check_headway_overrides(): coerce, check the names
+#' against the scenario set, check the required columns, reject duplicates, and
+#' report offenders by example.
+#'
+#' Reference resolution (stop_id / route_id / trip_id collision) is *not* done
+#' here: it needs the generated trip ids and the emitted stop and route sets,
+#' which do not exist yet. See check_extra_trips_refs().
+#'
+#' @return A named list, one element per scenario that actually contributes
+#'   trips, each \code{list(trips=, stop_times=)} with canonical columns and
+#'   types. Scenarios that supply nothing are absent from the result: the number
+#'   of extra trips per cell genuinely differs by scenario, so "supplied for one"
+#'   does not imply "supplied for all".
+#' @noRd
+check_extra_trips <- function(extra_trips, scen, service_id) {
+  if (is.null(extra_trips)) {
+    return(NULL)
+  }
+  if (
+    !is.list(extra_trips) ||
+      is.data.frame(extra_trips) ||
+      length(extra_trips) == 0L ||
+      is.null(names(extra_trips)) ||
+      any(is.na(names(extra_trips))) ||
+      any(!nzchar(names(extra_trips)))
+  ) {
+    stop(
+      "'extra_trips' must be a non-empty named list keyed by scenario name, ",
+      "each element a list with 'trips' and 'stop_times'.",
+      call. = FALSE
+    )
+  }
+  dup <- unique(names(extra_trips)[duplicated(names(extra_trips))])
+  if (length(dup) > 0L) {
+    stop(
+      "'extra_trips' names scenario(s) more than once: '",
+      paste(dup, collapse = "', '"),
+      "'.",
+      call. = FALSE
+    )
+  }
+  # The likeliest mistake is passing one scenario's material directly, whose
+  # names then read as scenario names. Say so rather than reporting "trips" and
+  # "stop_times" as undefined scenarios.
+  if (all(c("trips", "stop_times") %in% names(extra_trips))) {
+    stop(
+      "'extra_trips' looks like a single list(trips=, stop_times=). It must be ",
+      "a named list keyed by scenario name, e.g. list(median = list(trips = , ",
+      "stop_times = )).",
+      call. = FALSE
+    )
+  }
+  bad_scen <- setdiff(names(extra_trips), scen)
+  if (length(bad_scen) > 0L) {
+    stop(
+      "'extra_trips' names scenario(s) that 'quantiles' does not define: '",
+      paste(bad_scen, collapse = "', '"),
+      "'. 'quantiles' is the single source of scenario identity.",
+      call. = FALSE
+    )
+  }
+  out <- lapply(
+    names(extra_trips),
+    function(s) check_extra_trips_one(extra_trips[[s]], s, service_id)
+  )
+  names(out) <- names(extra_trips)
+  out <- out[!vapply(out, is.null, logical(1L))]
+  if (length(out) == 0L) NULL else out
+}
+
+#' Example offenders for an error message, capped
+#' @noRd
+extra_examples <- function(x, n = 5L) {
+  x <- unique(as.character(x))
+  paste0(
+    "'",
+    paste(utils::head(x, n), collapse = "', '"),
+    "'",
+    if (length(x) > n) paste0(" (and ", length(x) - n, " more)") else ""
+  )
+}
+
+#' Validate and canonicalise one scenario's extra trips
+#' @noRd
+check_extra_trips_one <- function(x, s, service_id) {
+  where <- paste0("extra_trips[[\"", s, "\"]]")
+  if (is.null(x)) {
+    return(NULL)
+  }
+  if (
+    !is.list(x) ||
+      is.data.frame(x) ||
+      !all(c("trips", "stop_times") %in% names(x))
+  ) {
+    stop(
+      "'",
+      where,
+      "' must be a list with 'trips' and 'stop_times' elements.",
+      call. = FALSE
+    )
+  }
+  trips <- x$trips
+  st <- x$stop_times
+  if (!is.null(trips) && !is.data.frame(trips)) {
+    stop("'", where, "$trips' must be a data.frame.", call. = FALSE)
+  }
+  if (!is.null(st) && !is.data.frame(st)) {
+    stop("'", where, "$stop_times' must be a data.frame.", call. = FALSE)
+  }
+  # A scenario that adds nothing is legitimate - a cell expressible as a headway
+  # in one scenario need not be in another - so an empty pair is not an error.
+  if (is.null(trips) || nrow(trips) == 0L) {
+    if (!is.null(st) && nrow(st) > 0L) {
+      stop(
+        "'",
+        where,
+        "$stop_times' has rows but '",
+        where,
+        "$trips' has none, so those stop times reference no trip.",
+        call. = FALSE
+      )
+    }
+    return(NULL)
+  }
+  if (is.null(st) || nrow(st) == 0L) {
+    stop(
+      "'",
+      where,
+      "$trips' has rows but '",
+      where,
+      "$stop_times' has none; a trip with no stop times is not a valid feed.",
+      call. = FALSE
+    )
+  }
+
+  trips <- data.table::as.data.table(trips)
+  st <- data.table::as.data.table(st)
+  validate_required_columns(
+    trips,
+    c("trip_id", "route_id"),
+    paste0("'", where, "$trips'")
+  )
+  validate_required_columns(
+    st,
+    c("trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"),
+    paste0("'", where, "$stop_times'")
+  )
+
+  # --- trips ---------------------------------------------------------------
+  svc <- if ("service_id" %in% names(trips)) {
+    as.character(trips$service_id)
+  } else {
+    rep(NA_character_, nrow(trips))
+  }
+  # The feed synthesizes exactly one service, so an absent service_id is stamped
+  # with it and a different one is a contradiction rather than a second service.
+  blank_svc <- is.na(svc) | !nzchar(svc)
+  svc[blank_svc] <- as.character(service_id)
+  bad_svc <- unique(svc[svc != as.character(service_id)])
+  if (length(bad_svc) > 0L) {
+    stop(
+      "'",
+      where,
+      "$trips$service_id' must be the feed's single synthesized service '",
+      service_id,
+      "', but names ",
+      extra_examples(bad_svc),
+      ". Leave the column out to have it stamped.",
+      call. = FALSE
+    )
+  }
+  trips_out <- data.table::data.table(
+    route_id = as.character(trips$route_id),
+    service_id = svc,
+    trip_id = as.character(trips$trip_id),
+    direction_id = if ("direction_id" %in% names(trips)) {
+      suppressWarnings(as.integer(trips$direction_id))
+    } else {
+      NA_integer_
+    }
+  )
+  blank_id <- is.na(trips_out$trip_id) | !nzchar(trips_out$trip_id)
+  if (any(blank_id)) {
+    stop(
+      "'",
+      where,
+      "$trips$trip_id' has ",
+      sum(blank_id),
+      " missing or empty value(s).",
+      call. = FALSE
+    )
+  }
+  blank_route <- is.na(trips_out$route_id) | !nzchar(trips_out$route_id)
+  if (any(blank_route)) {
+    stop(
+      "'",
+      where,
+      "$trips$route_id' has ",
+      sum(blank_route),
+      " missing or empty value(s).",
+      call. = FALSE
+    )
+  }
+  dup_trip <- unique(trips_out$trip_id[duplicated(trips_out$trip_id)])
+  if (length(dup_trip) > 0L) {
+    stop(
+      "'",
+      where,
+      "$trips' has ",
+      length(dup_trip),
+      " duplicate trip_id(s): ",
+      extra_examples(dup_trip),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  # --- stop_times ----------------------------------------------------------
+  st_out <- data.table::data.table(
+    trip_id = as.character(st$trip_id),
+    arrival_time = as.character(st$arrival_time),
+    departure_time = as.character(st$departure_time),
+    stop_id = as.character(st$stop_id),
+    stop_sequence = suppressWarnings(as.integer(st$stop_sequence))
+  )
+  orphan <- setdiff(unique(st_out$trip_id), trips_out$trip_id)
+  if (length(orphan) > 0L) {
+    stop(
+      "'",
+      where,
+      "$stop_times' references ",
+      length(orphan),
+      " trip_id(s) that '",
+      where,
+      "$trips' does not list: ",
+      extra_examples(orphan),
+      ".",
+      call. = FALSE
+    )
+  }
+  n_by_trip <- st_out[, list(n = .N), by = "trip_id"]
+  thin <- merge(
+    trips_out[, list(trip_id)],
+    n_by_trip,
+    by = "trip_id",
+    all.x = TRUE
+  )
+  thin[is.na(n), n := 0L]
+  # Fewer than two stop times is a trip that goes nowhere; gtfs-validator reports
+  # it as an ERROR, so accepting it here would ship an invalid feed.
+  thin <- thin[n < 2L]
+  if (nrow(thin) > 0L) {
+    stop(
+      nrow(thin),
+      " extra trip(s) in '",
+      where,
+      "' have fewer than two stop_times rows: ",
+      extra_examples(thin$trip_id),
+      ".",
+      call. = FALSE
+    )
+  }
+  blank_stop <- is.na(st_out$stop_id) | !nzchar(st_out$stop_id)
+  if (any(blank_stop)) {
+    stop(
+      "'",
+      where,
+      "$stop_times$stop_id' has ",
+      sum(blank_stop),
+      " missing or empty value(s).",
+      call. = FALSE
+    )
+  }
+  if (anyNA(st_out$stop_sequence) || any(st_out$stop_sequence < 0L)) {
+    stop(
+      "'",
+      where,
+      "$stop_times$stop_sequence' must be a non-negative whole number.",
+      call. = FALSE
+    )
+  }
+  dup_seq <- st_out[, list(n = .N), by = c("trip_id", "stop_sequence")][n > 1L]
+  if (nrow(dup_seq) > 0L) {
+    stop(
+      "'",
+      where,
+      "$stop_times' repeats a stop_sequence within a trip, so the stop order is ",
+      "ambiguous: ",
+      extra_examples(dup_seq$trip_id),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  arr <- hms_to_secs(st_out$arrival_time)
+  dep <- hms_to_secs(st_out$departure_time)
+  unparsed <- unique(st_out$trip_id[is.na(arr) | is.na(dep)])
+  if (length(unparsed) > 0L) {
+    stop(
+      "'",
+      where,
+      "$stop_times' has arrival_time/departure_time values that are not ",
+      "\"HH:MM:SS\" clock strings, in trip(s) ",
+      extra_examples(unparsed),
+      ". Extra trips carry absolute clock times (hours >= 24 are allowed for ",
+      "trips that run past midnight).",
+      call. = FALSE
+    )
+  }
+  st_out[, c("arr_s", "dep_s") := list(arr, dep)]
+  data.table::setorderv(st_out, c("trip_id", "stop_sequence"))
+  # Non-decreasing along the trip means the interleaved arrival/departure
+  # sequence never goes backwards: dwell is non-negative at each stop, and the
+  # next arrival is not before this departure.
+  st_out[, prev_dep := data.table::shift(dep_s, 1L), by = "trip_id"]
+  bad_time <- unique(st_out[
+    dep_s < arr_s | (!is.na(prev_dep) & arr_s < prev_dep),
+    trip_id
+  ])
+  if (length(bad_time) > 0L) {
+    stop(
+      "'",
+      where,
+      "$stop_times' is not non-decreasing along the trip (a departure before ",
+      "its arrival, or an arrival before the previous departure), in trip(s) ",
+      extra_examples(bad_time),
+      ".",
+      call. = FALSE
+    )
+  }
+  # Re-encode from the parsed seconds so extra trips and generated trips write
+  # the same "HH:MM:SS" spelling, exactly as window bounds are normalised.
+  st_out[, arrival_time := secs_to_clock(arr_s)]
+  st_out[, departure_time := secs_to_clock(dep_s)]
+  st_out[, c("arr_s", "dep_s", "prev_dep") := NULL]
+
+  data.table::setorderv(trips_out, c("route_id", "service_id", "trip_id"))
+  list(trips = trips_out[], stop_times = st_out[])
+}
+
+#' Check that extra trips reference things the feed actually contains
+#'
+#' Dangling references are an invalid feed per GTFS. The lenient NA-coordinates
+#' path in build_stops_table() exists for *observed* data with genuinely unknown
+#' coordinates; a caller-supplied table naming a stop nothing knows about is a
+#' typo, and inventing a coordinate-less stop for it would hide that.
+#' @noRd
+check_extra_trips_refs <- function(
+  extra,
+  generated_trip_ids,
+  pattern_stop_ids,
+  known_stop_ids,
+  known_route_ids
+) {
+  if (is.null(extra)) {
+    return(invisible(NULL))
+  }
+  allowed_stops <- unique(c(pattern_stop_ids, known_stop_ids))
+  for (s in names(extra)) {
+    where <- paste0("extra_trips[[\"", s, "\"]]")
+    e <- extra[[s]]
+    clash <- intersect(e$trips$trip_id, generated_trip_ids)
+    if (length(clash) > 0L) {
+      stop(
+        length(clash),
+        " extra trip_id(s) in '",
+        where,
+        "' collide with generated frequency trip_id(s): ",
+        extra_examples(clash),
+        ". Generated ids are route_direction_window; give the extra trips ",
+        "distinct ids.",
+        call. = FALSE
+      )
+    }
+    bad_stops <- setdiff(unique(e$stop_times$stop_id), allowed_stops)
+    if (length(bad_stops) > 0L) {
+      stop(
+        length(bad_stops),
+        " stop_id(s) referenced by '",
+        where,
+        "' are in neither the emitted stop patterns nor 'stops': ",
+        extra_examples(bad_stops),
+        ". A dangling stop reference is an invalid feed, so it is not filled ",
+        "in with placeholder coordinates.",
+        call. = FALSE
+      )
+    }
+    bad_routes <- setdiff(unique(e$trips$route_id), known_route_ids)
+    if (length(bad_routes) > 0L) {
+      stop(
+        length(bad_routes),
+        " route_id(s) referenced by '",
+        where,
+        "' are in neither the emitted routes nor the baseline routes.txt: ",
+        extra_examples(bad_routes),
+        ".",
+        call. = FALSE
+      )
+    }
+  }
+  invisible(NULL)
 }
 
 #' Assemble the resolved (cell x scenario) grid

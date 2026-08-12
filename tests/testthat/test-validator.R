@@ -265,6 +265,58 @@ test_that("baseline-anchored frequency feeds have no ERROR-level validator notic
   }
 })
 
+test_that("a mixed frequency + exact-time feed has no ERROR-level validator notices", {
+  skip_unless_validator_enabled()
+
+  # The load-bearing question for extra_trips=: GTFS says only trips listed in
+  # frequencies.txt are frequency-based and the rest are exact-time, so a feed
+  # may mix the two - but only gtfs-validator can confirm that the feed this
+  # package writes for that mix is actually spec-valid. Nothing cheaper answers
+  # it, because the defect would be a referential or field-level one across two
+  # differently-timed trip kinds, not an arithmetic slip.
+  windows <- list(am_peak = c("06:00", "09:00"))
+  extra <- make_extra_trips(c("X_exact_1", "X_exact_2"))
+
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = windows,
+    agency = list(name = "Test Transit", url = "https://example.org", timezone = "UTC"),
+    stops = make_stops_with_extra(),
+    route_type = 3L,
+    strict = TRUE,
+    # deliberately asymmetric: the counts differ across scenarios, which the
+    # contract allows, and one scenario has none at all
+    extra_trips = list(
+      median = extra,
+      reliable = make_extra_trips("X_exact_1")
+    )
+  )
+
+  expect_setequal(
+    feeds$median$trips$trip_id,
+    c("R1_0_am_peak", "X_exact_1", "X_exact_2")
+  )
+  # the mix itself: a frequency row for the generated trip and none for the
+  # exact-time ones
+  expect_identical(feeds$median$frequencies$trip_id, "R1_0_am_peak")
+  expect_false(any(extra$trips$trip_id %in% feeds$median$frequencies$trip_id))
+  # S9 is reached only by an extra trip, so referential integrity here is the
+  # widened stop_ids derivation working
+  expect_true("S9" %in% feeds$median$stops$stop_id)
+
+  for (s in names(feeds)) {
+    notices <- validator_notices(feeds[[s]])
+    errors <- validator_errors(notices)
+    expect_identical(
+      errors,
+      character(),
+      info = paste0(
+        "Mixed-feed ", s, " validator ERRORs: ", paste(errors, collapse = ", ")
+      )
+    )
+  }
+})
+
 test_that("passage-based frequency feeds have no ERROR-level validator notices", {
   skip_unless_validator_enabled()
 

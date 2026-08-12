@@ -114,6 +114,7 @@ if (getRversion() >= "2.15.1") {
     "drop_reason",
     "i.ratio",
     "i.headway_secs",
-    "i.headway_source"
+    "i.headway_source",
+    "prev_dep"
   ))
 }

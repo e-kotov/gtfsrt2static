@@ -930,3 +930,252 @@ test_that("snapshot_grid rejects anything that is not a frequency feed set", {
   scaffold <- suppressWarnings(snapshot_scaffold(make_events_clean()))
   expect_error(snapshot_grid(scaffold), "no resolved grid")
 })
+
+# --- extra_trips (FR-5) -------------------------------------------------------
+# A real feed is not purely frequency-based. Cells that cannot be expressed as a
+# repeating headway are carried as individually-timed trips with no
+# frequencies.txt row - which is what the GTFS specification means by a mixed
+# feed, since only trips listed in frequencies.txt are frequency-based.
+
+# Frequency material and extra trips over the same events, with S9 reachable.
+extra_feeds <- function(extra_trips, ...) {
+  suppressWarnings(snapshot_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    stops = make_stops_with_extra(),
+    extra_trips = extra_trips,
+    ...
+  ))
+}
+
+test_that("extra trips reach trips.txt and stop_times.txt but never frequencies.txt", {
+  feeds <- extra_feeds(list(median = make_extra_trips(c("X1", "X2"))))
+  med <- feeds$median
+
+  expect_setequal(med$trips$trip_id, c("R1_0_am_peak", "X1", "X2"))
+  expect_true(all(c("X1", "X2") %in% med$stop_times$trip_id))
+  expect_identical(nrow(med$stop_times[trip_id == "X1"]), 3L)
+  # The load-bearing assertion: no frequencies row, so these are exact-time
+  # trips read straight from stop_times.
+  expect_false(any(c("X1", "X2") %in% med$frequencies$trip_id))
+  expect_identical(med$frequencies$trip_id, "R1_0_am_peak")
+})
+
+test_that("extra trips carry absolute clock times, not offsets from 00:00:00", {
+  feeds <- extra_feeds(list(median = make_extra_trips("X1")))
+  st <- feeds$median$stop_times[trip_id == "X1"]
+  data.table::setorderv(st, "stop_sequence")
+  expect_identical(st$arrival_time, c("07:00:00", "07:05:00", "07:11:00"))
+  expect_identical(st$departure_time, c("07:00:30", "07:05:30", "07:11:00"))
+  # while the generated frequency trip is still offsets from trip start
+  gen <- feeds$median$stop_times[trip_id == "R1_0_am_peak"]
+  expect_identical(gen$arrival_time[[1L]], "00:00:00")
+})
+
+test_that("an extra trip's stops and routes reach stops.txt and routes.txt", {
+  feeds <- extra_feeds(list(median = make_extra_trips("X1")))
+  # S9 is on no emitted frequency pattern, so it is in stops.txt only because
+  # the stop_ids derivation was widened; build_stops_table() filters to that set.
+  expect_true("S9" %in% feeds$median$stops$stop_id)
+  expect_false(is.na(feeds$median$stops[stop_id == "S9"]$stop_lat))
+  # every stop_id and route_id referenced by the feed resolves
+  expect_true(all(feeds$median$stop_times$stop_id %in% feeds$median$stops$stop_id))
+  expect_true(all(feeds$median$trips$route_id %in% feeds$median$routes$route_id))
+})
+
+test_that("an extra trip on a baseline route with no observed headway is emitted", {
+  b <- make_baseline_freq()
+  b$routes <- rbind(b$routes, data.frame(
+    route_id = "R7",
+    agency_id = "AGB",
+    route_short_name = "7",
+    route_long_name = "Unobserved Line",
+    route_type = 0L
+  ))
+  feeds <- suppressWarnings(snapshot_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    baseline = b,
+    pattern_source = "baseline",
+    scaling = make_scaling("median", 1),
+    extra_trips = list(median = make_extra_trips("X1", route_id = "R7",
+                                                 stops = c("S1", "S2", "S3")))
+  ))
+  expect_true("R7" %in% feeds$median$routes$route_id)
+  # the inherited row keeps the operator's route_type rather than scaffolding 3
+  expect_identical(feeds$median$routes[route_id == "R7"]$route_type, 0L)
+  expect_true("X1" %in% feeds$median$trips$trip_id)
+})
+
+test_that("extra trips are stamped with the feed's single synthesized service", {
+  feeds <- extra_feeds(list(median = make_extra_trips("X1")), service_id = "WD")
+  expect_identical(unique(feeds$median$trips$service_id), "WD")
+  expect_identical(feeds$median$calendar$service_id, "WD")
+})
+
+test_that("an extra trip naming a different service_id is an error", {
+  expect_error(
+    extra_feeds(list(median = make_extra_trips("X1", service_id = "OTHER"))),
+    "single synthesized service"
+  )
+  # ... and an explicitly matching one is accepted
+  feeds <- extra_feeds(list(median = make_extra_trips("X1", service_id = "SVC1")))
+  expect_identical(unique(feeds$median$trips$service_id), "SVC1")
+})
+
+test_that("extra trips differing in count across scenarios are accepted", {
+  # Reverses the original FR-5 note: exact-trip evidence is drawn per scenario
+  # (scheduled from the timetable, others from observed passages) and filtered by
+  # that scenario's own ratio, so the counts genuinely differ. Requiring matching
+  # id sets would reject correct data.
+  feeds <- extra_feeds(list(
+    median = make_extra_trips(c("X1", "X2", "X3")),
+    reliable = make_extra_trips("X1")
+  ))
+  expect_length(feeds, 3L)
+  expect_setequal(feeds$structural$trips$trip_id, "R1_0_am_peak")
+  expect_setequal(feeds$median$trips$trip_id, c("R1_0_am_peak", "X1", "X2", "X3"))
+  expect_setequal(feeds$reliable$trips$trip_id, c("R1_0_am_peak", "X1"))
+})
+
+test_that("a scenario supplying no extra trips is accepted", {
+  feeds <- extra_feeds(list(
+    median = make_extra_trips("X1"),
+    reliable = list(trips = NULL, stop_times = NULL)
+  ))
+  expect_setequal(feeds$reliable$trips$trip_id, "R1_0_am_peak")
+})
+
+test_that("extra trips are not rows of the resolved grid", {
+  # Decision: the grid is one row per candidate (route, direction, window) cell.
+  # Extra trips are not cells, and adding them would produce rows whose
+  # route_ref, window, ratio, headway_secs and drop_reason are all NA.
+  feeds <- extra_feeds(list(median = make_extra_trips(c("X1", "X2"))))
+  grid <- snapshot_grid(feeds)
+  expect_false(any(c("X1", "X2") %in% grid$trip_id))
+  expect_identical(nrow(grid), 3L)
+  # so the funnel closes only when the caller adds back the ids it supplied
+  expect_identical(
+    sort(c(grid[scenario == "median" & emitted == TRUE]$trip_id, "X1", "X2")),
+    sort(feeds$median$trips$trip_id)
+  )
+})
+
+test_that("extra_trips = NULL leaves every feed byte-identical", {
+  args <- list(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    stops = make_stops_with_extra()
+  )
+  without <- suppressWarnings(do.call(snapshot_frequencies, args))
+  explicit <- suppressWarnings(
+    do.call(snapshot_frequencies, c(args, list(extra_trips = NULL)))
+  )
+  expect_identical(without, explicit)
+})
+
+test_that("extra_trips must be a named list keyed by a defined scenario", {
+  expect_error(
+    extra_feeds(list(make_extra_trips("X1"))),
+    "named list keyed by scenario name"
+  )
+  # one scenario's material passed directly - names read as scenario names, so
+  # the message has to name the actual mistake
+  expect_error(
+    extra_feeds(make_extra_trips("X1")),
+    "looks like a single list"
+  )
+  expect_error(
+    extra_feeds(list(nope = make_extra_trips("X1"))),
+    "'quantiles' does not define"
+  )
+  expect_error(
+    extra_feeds(list(median = "not a list")),
+    "must be a list with 'trips' and 'stop_times'"
+  )
+  expect_error(
+    extra_feeds(list(median = list(trips = make_extra_trips("X1")$trips))),
+    "must be a list with 'trips' and 'stop_times'"
+  )
+})
+
+test_that("an extra trip_id colliding with a generated one is an error", {
+  expect_error(
+    extra_feeds(list(median = make_extra_trips("R1_0_am_peak"))),
+    "collide with generated frequency trip_id"
+  )
+})
+
+test_that("a duplicate extra trip_id is an error", {
+  expect_error(
+    extra_feeds(list(median = make_extra_trips(c("X1", "X1")))),
+    "duplicate trip_id"
+  )
+})
+
+test_that("a dangling stop_id or route_id is an error, not a publish blocker", {
+  # The lenient NA-coordinates path in build_stops_table() is for observed data
+  # with genuinely unknown coordinates, not for a typo in a caller table.
+  bad_stop <- make_extra_trips("X1")
+  bad_stop$stop_times$stop_id[[2L]] <- "NOPE"
+  expect_error(
+    extra_feeds(list(median = bad_stop)),
+    "in neither the emitted stop patterns nor 'stops'"
+  )
+  expect_error(
+    extra_feeds(list(median = make_extra_trips("X1", route_id = "R99"))),
+    "in neither the emitted routes nor the baseline"
+  )
+})
+
+test_that("extra stop_times must reference a listed trip and have two stops", {
+  orphan <- make_extra_trips("X1")
+  orphan$stop_times$trip_id[[2L]] <- "X2"
+  expect_error(extra_feeds(list(median = orphan)), "does not list")
+
+  thin <- make_extra_trips("X1")
+  thin$stop_times <- thin$stop_times[1L, ]
+  expect_error(extra_feeds(list(median = thin)), "fewer than two stop_times")
+
+  no_st <- make_extra_trips("X1")
+  no_st$stop_times <- no_st$stop_times[0L, ]
+  expect_error(extra_feeds(list(median = no_st)), "no stop times is not a valid feed")
+
+  no_trips <- make_extra_trips("X1")
+  no_trips$trips <- no_trips$trips[0L, ]
+  expect_error(extra_feeds(list(median = no_trips)), "reference no trip")
+})
+
+test_that("extra stop_times must carry parsable, non-decreasing clock times", {
+  unparsable <- make_extra_trips("X1")
+  unparsable$stop_times$arrival_time[[2L]] <- "half past seven"
+  expect_error(extra_feeds(list(median = unparsable)), "clock strings")
+
+  backwards <- make_extra_trips("X1")
+  backwards$stop_times$arrival_time[[2L]] <- "06:00:00"
+  expect_error(extra_feeds(list(median = backwards)), "not non-decreasing")
+
+  negative_dwell <- make_extra_trips("X1")
+  negative_dwell$stop_times$departure_time[[1L]] <- "06:59:00"
+  expect_error(extra_feeds(list(median = negative_dwell)), "not non-decreasing")
+
+  # a trip legitimately running past midnight keeps its >= 24 h clock
+  overnight <- make_extra_trips("X1")
+  overnight$stop_times$arrival_time <- c("23:50:00", "24:05:00", "24:20:00")
+  overnight$stop_times$departure_time <- c("23:50:30", "24:05:30", "24:20:00")
+  feeds <- extra_feeds(list(median = overnight))
+  st <- feeds$median$stop_times[trip_id == "X1"]
+  data.table::setorderv(st, "stop_sequence")
+  expect_identical(st$arrival_time, c("23:50:00", "24:05:00", "24:20:00"))
+})
+
+test_that("extra stop_sequence must be a usable within-trip order", {
+  dup_seq <- make_extra_trips("X1")
+  dup_seq$stop_times$stop_sequence <- c(1L, 1L, 2L)
+  expect_error(extra_feeds(list(median = dup_seq)), "repeats a stop_sequence")
+
+  na_seq <- make_extra_trips("X1")
+  na_seq$stop_times$stop_sequence <- c(1L, NA_integer_, 3L)
+  expect_error(extra_feeds(list(median = na_seq)), "non-negative whole number")
+})

@@ -179,12 +179,19 @@ makes a stage-by-stage funnel check possible:
 # every candidate cell is accounted for, in every scenario
 table(grid$scenario, grid$drop_reason, useNA = "ifany")
 
-# and the emitted rows match what was actually written
+# and the emitted rows match what was actually written -- these feeds were built
+# without extra_trips=, so the grid accounts for every row of trips.txt
 identical(
   sort(grid[scenario == "median" & emitted == TRUE]$trip_id),
   sort(feeds$median$trips$trip_id)
 )
 ```
+
+That last identity holds **because no `extra_trips` were passed**. The grid has
+one row per candidate `(route, direction, window)` cell, and individually-timed
+trips are not cells; if you add them, reconcile against
+`c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)` instead. The next
+section shows that.
 
 A cell is dropped for one of two reasons. `"no_stop_pattern"` means the group
 had a headway but no served (or, when anchoring, no baseline) stop pattern.
@@ -197,6 +204,93 @@ One case is deliberately **not** a drop: a cell can be `emitted` with
 but no `frequencies.txt` row was, because that group's headway quantile was
 missing or non-positive. Such a row carries no `drop_reason`, so do not infer
 "emitted" from "has a headway".
+
+## Mixing in individually-timed trips
+
+Real service is not purely frequency-based. Some cells cannot honestly be
+written as one representative trip plus a repeating headway — an hour with three
+irregular departures, a peak extra, a cell whose evidence is a handful of exact
+passages rather than a rhythm. GTFS handles this directly: **only trips listed in
+`frequencies.txt` are frequency-based**, and every other trip is read from
+`stop_times` as exact scheduled times. A feed may contain both.
+
+`extra_trips=` is how you supply the second kind. It takes a named list keyed by
+scenario — the same names as `quantiles`, so a misspelled scenario is an error
+rather than a silent no-op — each element a `list(trips=, stop_times=)` whose
+times are **absolute clock strings**, not offsets from `00:00:00`:
+
+```{r extra-trips}
+# the inverse of clock_secs() above: seconds since midnight -> "HH:MM:SS"
+secs_clock <- function(s) {
+  sprintf("%02d:%02d:%02d", s %/% 3600, (s %% 3600) %/% 60, s %% 60)
+}
+
+extra <- list(
+  trips = data.frame(
+    route_id = "A", trip_id = c("A_exact_1", "A_exact_2"), direction_id = 0L
+  ),
+  stop_times = rbindlist(lapply(c("A_exact_1", "A_exact_2"), function(id) {
+    start <- if (id == "A_exact_1") 8 * 3600 + 2100 else 8 * 3600 + 3300
+    off <- c(0, 300, 720, 1080)
+    data.frame(
+      trip_id = id,
+      arrival_time = secs_clock(start + off),
+      departure_time = secs_clock(start + off + 20),
+      stop_id = stops,
+      stop_sequence = seq_along(stops)
+    )
+  }))
+)
+
+mixed <- snapshot_frequencies(
+  events,
+  windows = list(am_peak = c("07:00", "09:00")),
+  stops = stops_tbl,
+  agency = list(name = "Demo Transit", url = "https://example.org", timezone = "UTC"),
+  strict = TRUE,
+  # the two late departures are only defensible for the median scenario here
+  extra_trips = list(median = extra)
+)
+mixed$median$trips
+```
+
+The extra trips are in `trips.txt` and `stop_times.txt`, and deliberately **not**
+in `frequencies.txt` — that absence is what makes them exact-time trips:
+
+```{r extra-frequencies}
+mixed$median$frequencies
+```
+
+Three properties worth knowing:
+
+- **Their stops and routes are added to `stops.txt` and `routes.txt`**, but every
+  `stop_id` must already be known (from `stops`, or from an emitted pattern) and
+  every `route_id` must be an emitted or baseline route. A dangling reference is
+  an invalid feed, so it is rejected rather than filled in with a placeholder —
+  the lenient missing-coordinates path exists for observed data with genuinely
+  unknown positions, not for a typo in a table you supplied.
+- **No cross-scenario invariant is imposed.** A scenario may supply more, fewer
+  or no extra trips than another. Exact-time evidence legitimately differs by
+  scenario — a scheduled scenario draws it from the timetable while the others
+  draw it from observed passages — so requiring matching id sets would reject
+  correct data. The shared-trip-set guarantee stays scoped to the *generated*
+  frequency trips, where `scaling_missing` enforces it.
+- **They are not rows of `snapshot_grid()`.** The grid is one row per candidate
+  cell; extra trips are not cells, and adding them would produce rows whose
+  `route_ref`, `window`, `ratio`, `headway_secs` and `drop_reason` are all `NA`.
+  Since you supplied the trips, you already own their ids, so the funnel still
+  closes:
+
+```{r extra-funnel}
+mixed_grid <- snapshot_grid(mixed)
+identical(
+  sort(c(
+    mixed_grid[scenario == "median" & emitted == TRUE]$trip_id,
+    extra$trips$trip_id
+  )),
+  sort(mixed$median$trips$trip_id)
+)
+```
 
 ## From a real GTFS-Realtime feed
 

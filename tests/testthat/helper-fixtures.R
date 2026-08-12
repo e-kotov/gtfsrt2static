@@ -716,3 +716,60 @@ make_scaling <- function(
   grid$ratio <- rep_len(ratio, nrow(grid))
   grid
 }
+
+# --- extra (individually-timed) trip fixtures --------------------------------
+# Shaped exactly as snapshot_frequencies(extra_trips=) takes them: trips plus
+# stop_times carrying ABSOLUTE clock times, and no frequencies row anywhere.
+
+#' Stops that make the extra-trip fixtures resolvable.
+#'
+#' S1/S2/S3 are the make_events_clean() pattern; S9 is reached only by an extra
+#' trip, so it proves the stop_ids union rather than coincidentally passing.
+make_stops_with_extra <- function() {
+  data.frame(
+    stop_id = c("S1", "S2", "S3", "S9"),
+    stop_name = c("Stop 1", "Stop 2", "Stop 3", "Stop 9"),
+    stop_lat = c(40.71, 40.72, 40.73, 40.74),
+    stop_lon = c(-74.01, -74.02, -74.03, -74.04),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' One scenario's extra-trip material.
+#'
+#' Each id gets a 3-stop trip on route R1 direction 0, departing 10 minutes
+#' apart from 07:00 so several ids in one call stay distinguishable. The last
+#' stop is S9 by default: outside every emitted frequency pattern, so a test
+#' asserting it reaches stops.txt is testing the union and not the fixture.
+make_extra_trips <- function(
+  trip_ids,
+  route_id = "R1",
+  stops = c("S1", "S2", "S9"),
+  service_id = NULL
+) {
+  trips <- data.frame(
+    route_id = route_id,
+    trip_id = trip_ids,
+    direction_id = 0L,
+    stringsAsFactors = FALSE
+  )
+  if (!is.null(service_id)) {
+    trips$service_id <- service_id
+  }
+  clock <- function(secs) {
+    sprintf("%02d:%02d:%02d", secs %/% 3600L, (secs %% 3600L) %/% 60L, secs %% 60L)
+  }
+  stop_times <- data.table::rbindlist(lapply(seq_along(trip_ids), function(i) {
+    start <- 7L * 3600L + (i - 1L) * 600L
+    arr <- start + c(0L, 300L, 660L)
+    data.frame(
+      trip_id = trip_ids[[i]],
+      arrival_time = clock(arr),
+      departure_time = clock(arr + c(30L, 30L, 0L)),
+      stop_id = stops,
+      stop_sequence = seq_along(stops),
+      stringsAsFactors = FALSE
+    )
+  }))
+  list(trips = trips, stop_times = as.data.frame(stop_times))
+}

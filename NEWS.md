@@ -1,3 +1,51 @@
+# gtfsrt2static 0.4.0
+
+`snapshot_frequencies()` can now emit a **mixed feed**: frequency-based trips
+alongside individually-timed ones. A feed built from this package no longer has
+to be purely frequency-based, so cells that cannot honestly be written as a
+repeating headway can be carried instead of dropped.
+
+* **assemble (frequencies)**: new **`snapshot_frequencies(extra_trips=)`**, a
+  named list keyed by scenario name - the same names as `quantiles`, which is the
+  single source of scenario identity, so a misspelled scenario is an error rather
+  than a silent no-op. Each element is a `list(trips=, stop_times=)` whose times
+  are **absolute clock strings** (`"HH:MM:SS"`, hours >= 24 allowed), unlike the
+  generated frequency trips whose `stop_times` are offsets from `00:00:00`. These
+  trips reach `trips.txt` and `stop_times.txt` and get **no `frequencies.txt`
+  row**, which is exactly what the GTFS specification means by an exact-time
+  trip: only trips listed in `frequencies.txt` are frequency-based, and a feed
+  may mix the two. An absent `service_id` is stamped with the feed's single
+  synthesized service; a different one is an error.
+
+  Their stops and routes widen `stops.txt` and `routes.txt`, but every referenced
+  `stop_id` must already be known (from `stops` or an emitted pattern) and every
+  `route_id` must be an emitted or baseline route. A dangling reference is an
+  invalid feed and is rejected rather than filled in with placeholder
+  coordinates: the lenient missing-coordinates path exists for observed data with
+  genuinely unknown positions, not for a typo in a caller-supplied table.
+  Collisions with a generated `route_direction_window` id, duplicate ids,
+  unparsable times and times that go backwards along a trip are all hard errors
+  naming the offenders.
+
+  **No cross-scenario invariant is imposed on extra trips.** A scenario may
+  supply more, fewer or none than another, because exact-time evidence
+  legitimately differs by scenario - a scheduled scenario draws it from the
+  timetable while the others draw it from observed passages. Requiring matching
+  id sets would reject correct data. The shared-trip-set guarantee remains scoped
+  to the **generated frequency trips**, where `scaling_missing` enforces it.
+
+* **`snapshot_grid()` is unchanged and deliberately does not report extra
+  trips.** The grid is one row per candidate `(route, direction, window)` cell;
+  extra trips are not cells, and adding them would produce rows whose
+  `route_ref`, `window`, `ratio`, `headway_secs` and `drop_reason` are all `NA`.
+  No information is lost - the caller supplies the extra trips and so already
+  owns their ids - but a drop-funnel check must now reconcile `trips.txt` against
+  `c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)`. The
+  `vignette("frequency-feeds")` funnel example is corrected accordingly.
+
+* Existing calls are unaffected: `extra_trips = NULL` (the default) reproduces
+  0.3.0 output byte for byte.
+
 # gtfsrt2static 0.3.0
 
 `snapshot_frequencies()` now reports **what it built**, not only where it wrote
