@@ -155,6 +155,13 @@ with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
 All scenario feeds share one trip set by construction: \code{trip_id} is
 \code{route_direction_window} and is resolved once, before any scenario is
 built, so a contrast between two feeds is a contrast in service levels only.
+
+The list carries a \code{resolved_grid} attribute: one row per candidate
+\code{(route, direction, window)} and scenario, recording the ratio and
+headway actually applied and, for cells that never reached the feed, why.
+Read it with \code{\link{snapshot_grid}}. Cells dropped for want of a stop
+pattern or a ratio are present and flagged rather than absent, so the grid
+reconciles against a caller's own drop accounting.
 }
 \description{
 Collapses many observed runs into compact, frequency-based schedules: one
@@ -192,3 +199,6 @@ pattern instead and vary only service levels: see
 \code{\link{baseline_patterns}} and \code{pattern_source = "baseline"}.
 }
 
+\seealso{
+\code{\link{snapshot_grid}} for the resolved grid.
+}

@@ -443,6 +443,12 @@ check_scaling <- function(scaling, scen, windows) {
 #' *every* scenario. Dropping it from only the scenario that lacks a ratio would
 #' give the emitted feeds different trip sets, reacquiring exactly the
 #' different-networks confound that anchoring exists to remove.
+#'
+#' @return A list with \code{ratios} (trip_id / scenario / ratio, kept cells
+#'   only) and \code{dropped} (trip_ids removed under
+#'   \code{scaling_missing = "drop"}). The drops are returned rather than only
+#'   warned about because the resolved grid has to account for them: a caller
+#'   reconciling a drop funnel needs the drops as much as the keeps.
 #' @noRd
 resolve_trip_ratios <- function(grp, scaling, scen, windows, on_missing) {
   scaling <- check_scaling(scaling, scen, windows)
@@ -458,6 +464,7 @@ resolve_trip_ratios <- function(grp, scaling, scen, windows, on_missing) {
     by = c("route_ref", "direction_id", "window", "scenario"),
     all.x = TRUE
   )
+  drop_trips <- character()
   missing_cells <- got[is.na(ratio)]
   if (nrow(missing_cells) > 0L) {
     examples <- utils::head(missing_cells, 5L)
@@ -483,7 +490,7 @@ resolve_trip_ratios <- function(grp, scaling, scen, windows, on_missing) {
         call. = FALSE
       )
     }
-    drop_trips <- unique(missing_cells$trip_id)
+    drop_trips <- as.character(unique(missing_cells$trip_id))
     warning(
       nrow(missing_cells),
       " (route, direction, window, scenario) cell(s) have no ratio, e.g. ",
@@ -495,7 +502,7 @@ resolve_trip_ratios <- function(grp, scaling, scen, windows, on_missing) {
     )
     got <- got[!trip_id %in% drop_trips]
   }
-  got[, list(trip_id, scenario, ratio)]
+  list(ratios = got[, list(trip_id, scenario, ratio)], dropped = drop_trips)
 }
 
 #' Validate the optional per-cell headway override table

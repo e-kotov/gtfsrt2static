@@ -32,7 +32,7 @@ live endpoints ──rt_collect()──► daily .pb ZIPs
 | events | `snapshot_from_trip_updates()`, `snapshot_from_stop_times()`, `validate_events()` | reduce observations to one row per trip × stop × service date, with provenance |
 | summarise | `obs_headways()`, `obs_headways_by_passage()`, `obs_travel_times()`, `obs_stop_order()`, `time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
 | baseline | `baseline_patterns()`, `baseline_headways()` | reduce a *planned* static feed to one canonical stop pattern per route-direction, and to its own scheduled headways |
-| assemble | `snapshot_assemble()`, `snapshot_scaffold()`, `snapshot_frequencies()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed |
+| assemble | `snapshot_assemble()`, `snapshot_scaffold()`, `snapshot_frequencies()`, `snapshot_grid()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed — and read back which cells were emitted, with what, and why the rest were dropped |
 
 ## Quick example
 

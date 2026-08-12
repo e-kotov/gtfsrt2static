@@ -765,3 +765,168 @@ test_that("headways= is validated and ignores cells that are not emitted", {
   unknown$route_ref <- "ZZ"
   expect_warning(base_call(unknown), "not\n?\\s*emitted|not emitted")
 })
+
+# --- FR-6: the resolved grid ------------------------------------------------
+
+test_that("the resolved grid covers every cell x scenario in observed mode", {
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = two_windows(),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  grid <- snapshot_grid(feeds)
+
+  expect_s3_class(grid, "data.table")
+  expect_identical(
+    names(grid),
+    c(
+      "route_ref", "direction_id", "window", "scenario", "trip_id",
+      "ratio", "headway_secs", "headway_source", "emitted", "drop_reason"
+    )
+  )
+  # 2 windows x 3 scenarios, one row each, no duplicates.
+  expect_identical(nrow(grid), 6L)
+  expect_identical(anyDuplicated(grid, by = c("trip_id", "scenario")), 0L)
+  expect_identical(sort(unique(grid$scenario)), c("median", "reliable", "structural"))
+  expect_identical(sort(unique(grid$window)), c("early", "later"))
+
+  # Observed mode has no ratios at all, and nothing is dropped.
+  expect_true(all(is.na(grid$ratio)))
+  expect_true(all(grid$emitted))
+  expect_true(all(is.na(grid$drop_reason)))
+  expect_identical(unique(grid$headway_source), "observed")
+})
+
+test_that("the grid's emitted rows reconcile against what was written", {
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = two_windows(),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops()
+  )
+  grid <- snapshot_grid(feeds)
+
+  # This is the invariant the downstream drop funnel asserts: the grid's final
+  # stage equals the trips actually written, per scenario.
+  for (s in names(feeds)) {
+    g <- grid[scenario == s]
+    expect_identical(
+      sort(g[emitted == TRUE]$trip_id),
+      sort(feeds[[s]]$trips$trip_id)
+    )
+    freq <- feeds[[s]]$frequencies
+    expect_identical(
+      sort(g[!is.na(headway_secs)]$trip_id),
+      sort(freq$trip_id)
+    )
+    # and the headway reported is the headway written
+    expect_identical(
+      g[freq, on = "trip_id"]$headway_secs,
+      freq$headway_secs
+    )
+  }
+})
+
+test_that("cells dropped for want of a ratio stay in the grid, flagged", {
+  scaling <- rbind(
+    make_scaling(c("a", "b"), 1, window = "early"),
+    make_scaling("a", 1, window = "later")
+  )
+  expect_warning(
+    feeds <- snapshot_frequencies(
+      make_events_clean(),
+      windows = two_windows(),
+      quantiles = c(a = 0.5, b = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      scaling = scaling,
+      scaling_missing = "drop"
+    ),
+    "dropped from every"
+  )
+  grid <- snapshot_grid(feeds)
+
+  # Both candidate cells are still accounted for in both scenarios, even though
+  # only one of them reached either feed.
+  expect_identical(nrow(grid), 4L)
+  expect_identical(sort(unique(grid$window)), c("early", "later"))
+
+  kept <- grid[window == "early"]
+  expect_true(all(kept$emitted))
+  expect_true(all(is.na(kept$drop_reason)))
+  expect_identical(unique(kept$ratio), 1)
+
+  # The drop applies to *every* scenario, not just the one that lacked a ratio.
+  gone <- grid[window == "later"]
+  expect_identical(nrow(gone), 2L)
+  expect_false(any(gone$emitted))
+  expect_identical(unique(gone$drop_reason), "no_ratio")
+  expect_true(all(is.na(gone$headway_secs)))
+  # A dropped cell reports no ratio even for the scenario that had one: it was
+  # never applied, and the grid reports what was applied.
+  expect_true(all(is.na(gone$ratio)))
+})
+
+test_that("a cell with a headway but no stop pattern is flagged, not silent", {
+  # The baseline serves R1 only, so R2's headway group has no anchored pattern.
+  r2 <- make_events_from_offsets(
+    route = "R2",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(E = "06:05:00", F = "06:20:00"),
+    stops = c("S1", "S2"),
+    offsets = list(E = c(0, 300), F = c(0, 300))
+  )
+  ev <- rbind(make_events_clean(), r2)
+  expect_warning(
+    feeds <- snapshot_frequencies(
+      ev,
+      windows = list(am_peak = c("06:00", "09:00")),
+      quantiles = c(median = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      scaling = make_scaling("median", 1)
+    ),
+    "no baseline"
+  )
+  grid <- snapshot_grid(feeds)
+  expect_identical(sort(unique(grid$route_ref)), c("R1", "R2"))
+  expect_identical(grid[route_ref == "R2"]$drop_reason, "no_stop_pattern")
+  expect_false(grid[route_ref == "R2"]$emitted)
+  expect_true(grid[route_ref == "R1"]$emitted)
+  expect_true(is.na(grid[route_ref == "R1"]$drop_reason))
+})
+
+test_that("the grid distinguishes an overridden headway from an observed one", {
+  windows <- list(am_peak = c("06:00", "09:00"))
+  sh <- baseline_headways(make_baseline_freq(), windows = windows)
+  sh$scenario <- "scheduled"
+  feeds <- snapshot_frequencies(
+    make_events_clean(),
+    windows = windows,
+    quantiles = list(scheduled = c(headway = 0.5), median = 0.5),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    scaling = make_scaling(c("scheduled", "median"), 1),
+    headways = sh
+  )
+  grid <- snapshot_grid(feeds)
+  expect_identical(grid[scenario == "scheduled"]$headway_source, "override")
+  expect_identical(grid[scenario == "scheduled"]$headway_secs, 750L)
+  expect_identical(grid[scenario == "median"]$headway_source, "observed")
+  expect_identical(grid[scenario == "median"]$headway_secs, 720L)
+})
+
+test_that("the grid records the ratio actually applied, per scenario", {
+  feeds <- anchored_feeds(c("fast", "slow"), c(0.5, 2))
+  grid <- snapshot_grid(feeds)
+  expect_identical(grid[scenario == "fast"]$ratio, 0.5)
+  expect_identical(grid[scenario == "slow"]$ratio, 2)
+})
+
+test_that("snapshot_grid rejects anything that is not a frequency feed set", {
+  expect_error(snapshot_grid(list()), "no resolved grid")
+  scaffold <- suppressWarnings(snapshot_scaffold(make_events_clean()))
+  expect_error(snapshot_grid(scaffold), "no resolved grid")
+})

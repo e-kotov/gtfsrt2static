@@ -108,6 +108,12 @@ if (getRversion() >= "2.15.1") {
     "bad",
     "n_sched_trips",
     "override",
-    "start_s"
+    "start_s",
+    "emitted",
+    "headway_source",
+    "drop_reason",
+    "i.ratio",
+    "i.headway_secs",
+    "i.headway_source"
   ))
 }

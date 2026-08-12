@@ -152,6 +152,52 @@ reads the `publishable` / `publish_blockers` attributes stamped on it:
 snapshot_publishable(feeds$median)$publishable
 ```
 
+## What the feeds were built from
+
+The feeds tell you what was written; they do not tell you what was *considered*
+and left out. `snapshot_grid()` does — one row per candidate
+`(route_ref, direction_id, window)` and scenario:
+
+```{r grid}
+grid <- snapshot_grid(feeds)
+grid
+```
+
+`ratio` is the running-time ratio applied (`NA` here, because an observed
+pattern carries its own travel-time quantile and no ratio exists);
+`headway_secs` is the headway actually written to `frequencies.txt` and
+`headway_source` says whether it came from the observations or from a
+`headways=` override; `emitted` is whether the trip reached that scenario's
+`trips.txt`; and `drop_reason` explains the cells that did not.
+
+This exists so a pipeline can reconcile its own cell accounting against the
+feed. The grid is built from the candidate set captured **before** any drop
+stage runs, so its row count does not change as cells fall out — which is what
+makes a stage-by-stage funnel check possible:
+
+```{r grid-funnel}
+# every candidate cell is accounted for, in every scenario
+table(grid$scenario, grid$drop_reason, useNA = "ifany")
+
+# and the emitted rows match what was actually written
+identical(
+  sort(grid[scenario == "median" & emitted == TRUE]$trip_id),
+  sort(feeds$median$trips$trip_id)
+)
+```
+
+A cell is dropped for one of two reasons. `"no_stop_pattern"` means the group
+had a headway but no served (or, when anchoring, no baseline) stop pattern.
+`"no_ratio"` means `scaling_missing = "drop"` removed it — from *every*
+scenario, so the feeds keep one shared trip set (see the anchored section
+below).
+
+One case is deliberately **not** a drop: a cell can be `emitted` with
+`headway_secs = NA`. The representative trip and its `stop_times` were written,
+but no `frequencies.txt` row was, because that group's headway quantile was
+missing or non-positive. Such a row carries no `drop_reason`, so do not infer
+"emitted" from "has a headway".
+
 ## From a real GTFS-Realtime feed
 
 In practice the events come from a real feed. Here is the exact same pipeline on
@@ -280,7 +326,9 @@ Three things to know about this mode:
   (trip × scenario) grid before any feed is built, so a cell missing a ratio
   leaves *every* scenario rather than just the one that lacks it. That is what
   `scaling_missing` controls, and why its default is to error rather than quietly
-  produce feeds you cannot compare.
+  produce feeds you cannot compare. Under `scaling_missing = "drop"` the removed
+  cells stay visible in `snapshot_grid()` with `drop_reason = "no_ratio"`, so a
+  drop is something you can audit rather than something you have to notice.
 
 The identity contract is the thing to get right: `events$route_ref` must carry the
 same identifier as the baseline's `trips.route_id` (or `routes.route_short_name`,

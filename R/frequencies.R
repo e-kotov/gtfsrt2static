@@ -200,6 +200,14 @@ monotone_offsets <- function(travel, dwell) {
 #'   All scenario feeds share one trip set by construction: \code{trip_id} is
 #'   \code{route_direction_window} and is resolved once, before any scenario is
 #'   built, so a contrast between two feeds is a contrast in service levels only.
+#'
+#'   The list carries a \code{resolved_grid} attribute: one row per candidate
+#'   \code{(route, direction, window)} and scenario, recording the ratio and
+#'   headway actually applied and, for cells that never reached the feed, why.
+#'   Read it with \code{\link{snapshot_grid}}. Cells dropped for want of a stop
+#'   pattern or a ratio are present and flagged rather than absent, so the grid
+#'   reconciles against a caller's own drop accounting.
+#' @seealso \code{\link{snapshot_grid}} for the resolved grid.
 #' @export
 snapshot_frequencies <- function(
   events,
@@ -353,6 +361,11 @@ snapshot_frequencies <- function(
     window,
     sep = "_"
   )]
+  # The candidate cell set, captured before any drop stage runs. Every later
+  # stage removes trips from 'grp'; the resolved grid is reconstructed against
+  # this snapshot so a dropped cell stays visible with a reason instead of
+  # vanishing from the accounting.
+  cells <- unique(grp[, list(route_ref, direction_id, window, trip_id)])
 
   # window bounds as clock strings (normalise "HH:MM" -> "HH:MM:SS")
   win_start <- vapply(windows, function(w) secs_to_clock(hms_to_secs(w[1])), "")
@@ -375,6 +388,7 @@ snapshot_frequencies <- function(
     all.x = TRUE
   )
   dropped <- grp[is.na(has_pattern)]
+  dropped_no_pattern <- as.character(unique(dropped$trip_id))
   if (nrow(dropped) > 0L) {
     warning(
       nrow(dropped),
@@ -431,11 +445,13 @@ snapshot_frequencies <- function(
   # scenario loop. That placement is what enforces the shared trip set: a cell
   # missing a ratio for one scenario has to leave every scenario, which cannot
   # be decided from inside build_scenario().
-  ratios <- if (anchored) {
+  resolved <- if (anchored) {
     resolve_trip_ratios(grp, scaling, scen, windows, scaling_missing)
   } else {
     NULL
   }
+  ratios <- resolved$ratios
+  dropped_no_ratio <- if (anchored) resolved$dropped else character()
   if (anchored) {
     keep <- unique(ratios$trip_id)
     grp <- grp[trip_id %in% keep]
@@ -565,20 +581,177 @@ snapshot_frequencies <- function(
     freq <- apply_headway_overrides(freq, headways, s)
     freq <- freq[!is.na(headway_secs) & headway_secs > 0L]
 
+    trips_emitted <- trips_out[trip_id %in% unique(stop_times$trip_id)]
     feed <- list(
       agency = agency_tbl,
       stops = stops_out,
       routes = routes,
-      trips = trips_out[trip_id %in% unique(stop_times$trip_id)],
+      trips = trips_emitted,
       stop_times = stop_times,
       frequencies = freq,
       calendar = calendar,
       feed_info = feed_info
     )
-    stamp_publishable(as_gtfs_object(feed), blockers)
+    # What this scenario actually wrote, read back off the emitted tables rather
+    # than predicted from the inputs: the grid is only worth reconciling against
+    # if it reports the output, not the intent.
+    overridden <- if (is.null(headways)) {
+      character()
+    } else {
+      as.character(headways[scenario == s, trip_id])
+    }
+    built <- data.table::data.table(
+      trip_id = as.character(trips_emitted$trip_id),
+      scenario = s
+    )
+    built <- merge(
+      built,
+      freq[, list(trip_id = as.character(trip_id), headway_secs)],
+      by = "trip_id",
+      all.x = TRUE
+    )
+    built[, headway_source := data.table::fifelse(
+      is.na(headway_secs),
+      NA_character_,
+      data.table::fifelse(trip_id %in% overridden, "override", "observed")
+    )]
+    list(feed = stamp_publishable(as_gtfs_object(feed), blockers), built = built)
   }
 
-  stats::setNames(lapply(scen, build_scenario), scen)
+  out <- stats::setNames(lapply(scen, build_scenario), scen)
+  grid <- resolved_grid(
+    cells = cells,
+    scen = scen,
+    ratios = ratios,
+    built = data.table::rbindlist(lapply(out, `[[`, "built")),
+    dropped = list(
+      no_stop_pattern = dropped_no_pattern,
+      no_ratio = dropped_no_ratio
+    )
+  )
+  out <- lapply(out, `[[`, "feed")
+  attr(out, "resolved_grid") <- grid
+  out
+}
+
+#' Assemble the resolved (cell x scenario) grid
+#'
+#' One row per candidate \code{(route_ref, direction_id, window)} times scenario,
+#' carrying what was actually applied and, for the cells that never reached the
+#' feed, why. Built from the candidate snapshot rather than from the surviving
+#' trips so that the row count is invariant across drop stages - which is the
+#' property a caller reconciling a drop funnel is asserting against.
+#' @noRd
+resolved_grid <- function(cells, scen, ratios, built, dropped) {
+  grid <- merge(
+    cells,
+    data.table::CJ(trip_id = unique(cells$trip_id), scenario = scen, unique = TRUE),
+    by = "trip_id",
+    allow.cartesian = TRUE
+  )
+  grid[, emitted := FALSE]
+  grid[, ratio := NA_real_]
+  grid[, headway_secs := NA_integer_]
+  grid[, headway_source := NA_character_]
+
+  # Reasons are assigned in pipeline order, so a cell that would fail more than
+  # one stage reports the first one it hit - the same convention a stage-by-stage
+  # funnel uses, and the one that keeps the stage counts summing to the total.
+  grid[, drop_reason := NA_character_]
+  grid[trip_id %in% dropped$no_stop_pattern, drop_reason := "no_stop_pattern"]
+  grid[
+    is.na(drop_reason) & trip_id %in% dropped$no_ratio,
+    drop_reason := "no_ratio"
+  ]
+
+  if (!is.null(ratios) && nrow(ratios) > 0L) {
+    grid[
+      data.table::as.data.table(ratios),
+      ratio := i.ratio,
+      on = c("trip_id", "scenario")
+    ]
+  }
+  if (nrow(built) > 0L) {
+    grid[built, emitted := TRUE, on = c("trip_id", "scenario")]
+    grid[built, headway_secs := i.headway_secs, on = c("trip_id", "scenario")]
+    grid[
+      built,
+      headway_source := i.headway_source,
+      on = c("trip_id", "scenario")
+    ]
+  }
+  data.table::setcolorder(
+    grid,
+    c(
+      "route_ref",
+      "direction_id",
+      "window",
+      "scenario",
+      "trip_id",
+      "ratio",
+      "headway_secs",
+      "headway_source",
+      "emitted",
+      "drop_reason"
+    )
+  )
+  data.table::setorderv(grid, c("scenario", "route_ref", "direction_id", "window"))
+  grid[]
+}
+
+#' What a Frequency Feed Set Was Built From
+#'
+#' Returns the resolved \code{(route, direction, window, scenario)} grid that
+#' \code{\link{snapshot_frequencies}} built from: what was emitted, what was
+#' applied to it, and what was dropped before it reached the feed. This is the
+#' programmatic counterpart to the assembly warnings - a pipeline that
+#' reconciles its own cell accounting against the feed can gate on it instead of
+#' re-deriving the outcome from the written files, which is not always possible.
+#'
+#' @param feeds The list returned by \code{\link{snapshot_frequencies}}.
+#' @return A data.table with one row per candidate cell and scenario:
+#'   \describe{
+#'     \item{\code{route_ref}, \code{direction_id}, \code{window},
+#'       \code{scenario}}{The cell, keyed exactly as \code{scaling} and
+#'       \code{headways} key theirs.}
+#'     \item{\code{trip_id}}{The generated representative trip id, matching
+#'       \code{trips.txt} when the cell was emitted.}
+#'     \item{\code{ratio}}{The running-time ratio applied, or \code{NA} under
+#'       \code{pattern_source = "observed"}, where no ratio exists.}
+#'     \item{\code{headway_secs}}{The headway actually written to
+#'       \code{frequencies.txt}, or \code{NA} when no frequency row was written.}
+#'     \item{\code{headway_source}}{\code{"observed"} for a quantile-derived
+#'       headway, \code{"override"} when \code{headways} supplied it,
+#'       \code{NA} when no frequency row was written.}
+#'     \item{\code{emitted}}{Whether the trip reached this scenario's
+#'       \code{trips.txt}.}
+#'     \item{\code{drop_reason}}{\code{NA} when emitted, else
+#'       \code{"no_stop_pattern"} (a headway with no served/baseline pattern) or
+#'       \code{"no_ratio"} (removed from every scenario under
+#'       \code{scaling_missing = "drop"}).}
+#'   }
+#'   A cell may be emitted with \code{headway_secs = NA}: the representative trip
+#'   and its stop_times are written, but no \code{frequencies.txt} row is, because
+#'   the group's headway quantile was missing or non-positive. That row is not a
+#'   drop and is deliberately not given a \code{drop_reason}.
+#' @examples
+#' \dontrun{
+#' feeds <- snapshot_frequencies(events, windows = win)
+#' grid <- snapshot_grid(feeds)
+#' # every candidate cell is accounted for, in every scenario
+#' table(grid$scenario, grid$drop_reason, useNA = "ifany")
+#' }
+#' @export
+snapshot_grid <- function(feeds) {
+  grid <- attr(feeds, "resolved_grid", exact = TRUE)
+  if (is.null(grid)) {
+    stop(
+      "'feeds' carries no resolved grid; it must be the list returned by ",
+      "snapshot_frequencies().",
+      call. = FALSE
+    )
+  }
+  grid
 }
 
 #' Render an observation-derived pattern for one scenario

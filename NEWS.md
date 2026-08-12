@@ -1,3 +1,27 @@
+# gtfsrt2static 0.3.0
+
+`snapshot_frequencies()` now reports **what it built**, not only where it wrote
+it, so a pipeline can reconcile its own cell accounting against the emitted feed
+instead of re-deriving the outcome from the written files.
+
+* **assemble (frequencies)**: `snapshot_frequencies()` now reports what it built,
+  not only where it wrote it. The returned list carries a `resolved_grid`
+  attribute, read with the new **`snapshot_grid()`**: one row per candidate
+  `(route_ref, direction_id, window)` and scenario, with the `ratio` and
+  `headway_secs` actually applied, whether the headway was `"observed"` or came
+  from a `headways=` `"override"`, the generated `trip_id`, and whether the cell
+  was `emitted`. Cells that never reached the feed are **present and flagged**
+  rather than absent - `drop_reason` is `"no_stop_pattern"` (a headway with no
+  served or baseline pattern) or `"no_ratio"` (removed from every scenario under
+  `scaling_missing = "drop"`) - so a caller that reconciles its own cell
+  accounting stage by stage can close the funnel against the feed instead of
+  re-deriving the outcome from the written files. The grid's row count is
+  invariant across drop stages, which is the property such a check asserts
+  against. A cell can be emitted with `headway_secs = NA`: the trip and its
+  stop_times are written but no `frequencies.txt` row is, because the group's
+  headway quantile was missing or non-positive; that is not a drop and carries no
+  `drop_reason`.
+
 # gtfsrt2static 0.2.0
 
 Frequency feeds can now be **anchored on a published static feed** instead of
