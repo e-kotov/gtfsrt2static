@@ -1,8 +1,14 @@
 # Integration test: run the MobilityData GTFS validator against an assembled
 # feed and assert it has no ERROR-severity notices. It is heavy (needs Java
-# and downloads the validator jar), so it is opt-in: set
-# GTFSRT2STATIC_RUN_VALIDATOR=1 to run it. It self-skips when Java, network,
-# or gtfstools are unavailable, so ordinary `R CMD check` never runs it.
+# and the validator jar), so it is opt-in: set GTFSRT2STATIC_RUN_VALIDATOR=1 to
+# run it. It self-skips when Java, network, or gtfstools are unavailable, so
+# ordinary `R CMD check` never runs it.
+#
+# Point GTFSRT2STATIC_VALIDATOR_JAR at an already-downloaded jar to reuse it
+# instead of fetching one. Batch nodes routinely have enough network to satisfy
+# skip_if_offline() while still being unable to reach GitHub, which made the
+# download the harness's least reliable step; a cached jar also removes the
+# network requirement entirely.
 
 resolve_java <- function() {
   if (nzchar(Sys.which("java"))) {
@@ -32,10 +38,49 @@ skip_unless_validator_enabled <- function() {
   }
   skip_if_not_installed("gtfstools")
   skip_if_not_installed("jsonlite")
-  skip_if_offline()
+  # Only the download needs the network; a cached jar makes the harness usable
+  # on an isolated node.
+  if (!nzchar(cached_validator_jar())) {
+    skip_if_offline()
+  }
   if (!resolve_java()) {
     skip("No Java runtime found; MobilityData validator cannot run.")
   }
+}
+
+#' Path to a caller-supplied validator jar, or "" when none is configured.
+cached_validator_jar <- function() {
+  path <- Sys.getenv("GTFSRT2STATIC_VALIDATOR_JAR")
+  if (!nzchar(path)) {
+    return("")
+  }
+  if (!file.exists(path)) {
+    stop(
+      "GTFSRT2STATIC_VALIDATOR_JAR is set but names no existing file: ",
+      path,
+      call. = FALSE
+    )
+  }
+  path
+}
+
+# Resolved once per session: downloading the same jar for each scenario wasted
+# the slowest step of the harness four times over.
+validator_jar_cache <- new.env(parent = emptyenv())
+
+validator_jar <- function() {
+  cached <- cached_validator_jar()
+  if (nzchar(cached)) {
+    return(cached)
+  }
+  if (is.null(validator_jar_cache$path)) {
+    vdir <- tempfile()
+    dir.create(vdir)
+    gtfstools::download_validator(vdir)
+    validator_jar_cache$path <-
+      list.files(vdir, pattern = "\\.jar$", full.names = TRUE)[1]
+  }
+  validator_jar_cache$path
 }
 
 validator_errors <- function(notices) {
@@ -48,10 +93,7 @@ validator_errors <- function(notices) {
 validator_notices <- function(feed) {
   zip <- tempfile(fileext = ".zip")
   gtfsio::export_gtfs(feed, zip)
-  vdir <- tempfile()
-  dir.create(vdir)
-  gtfstools::download_validator(vdir)
-  jar <- list.files(vdir, pattern = "\\.jar$", full.names = TRUE)[1]
+  jar <- validator_jar()
   out <- tempfile()
   old <- options(
     parallelly.availableCores.methods = c("Slurm", "system", "fallback"),

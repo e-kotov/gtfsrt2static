@@ -22,6 +22,13 @@ instead of re-deriving the outcome from the written files.
   headway quantile was missing or non-positive; that is not a drop and carries no
   `drop_reason`.
 
+* **tests**: the opt-in MobilityData validator harness accepts
+  `GTFSRT2STATIC_VALIDATOR_JAR`, a path to an already-downloaded validator jar,
+  and reuses one download across scenarios otherwise. Batch nodes routinely have
+  enough network to satisfy `skip_if_offline()` while still being unable to reach
+  GitHub, which made the download the harness's least reliable step; a cached jar
+  removes the network requirement entirely.
+
 # gtfsrt2static 0.2.0
 
 Frequency feeds can now be **anchored on a published static feed** instead of
