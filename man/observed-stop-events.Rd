@@ -16,7 +16,7 @@ Columns:
 known, a synthetic id for inferred trips. Never NA.}
 \item{route_ref}{Route identity, NA when unknown.}
 \item{shape_ref}{Shape identity linking the trip to \code{shapes.txt},
-NA when unknown. Set by \code{snapshot_from_stop_times(shape_ref_prefix=)}
+NA when unknown. Set by \code{rt2s_events_from_stop_times(shape_ref_prefix=)}
 to match the ids produced by \code{gps2gtfs::g2g_shapes_from_trips()};
 the assembler writes it to \code{trips.shape_id}.}
 \item{direction_id}{GTFS direction (0/1), NA when unknown.}

@@ -11,6 +11,6 @@ delay_only$arrival_time <- ts(NA)
 delay_only$departure_time <- ts(NA)
 delay_only$arrival_delay <- 90
 expect_error(
-    snapshot_from_trip_updates(delay_only),
+    rt2s_events_from_trip_updates(delay_only),
     "requires the baseline feed's scheduled times"
   )

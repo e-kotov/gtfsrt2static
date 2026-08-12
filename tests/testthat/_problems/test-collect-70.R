@@ -21,11 +21,11 @@ manifest <- data.table::data.table(
     file = c("063000.pb", "063030.pb", NA)
   )
 data.table::fwrite(manifest, file.path(feed_dir, "manifest.csv"))
-written <- rt_rotate(archive)
+written <- rt2s_archive_rotate(archive)
 expect_identical(basename(written), "20260714.zip")
 expect_false(dir.exists(old_day))
 expect_identical(
     sort(utils::unzip(written, list = TRUE)$Name),
     c("063000.pb", "063030.pb")
   )
-cov <- rt_coverage(archive)
+cov <- rt2s_archive_coverage(archive)

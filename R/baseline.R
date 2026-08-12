@@ -3,7 +3,7 @@
 # the operator published and leaves its shape alone, so a scenario contrast can
 # vary service levels without also varying the network. See the
 # "Reconstructed versus anchored stop patterns" section of
-# ?snapshot_frequencies for when each regime is the right one.
+# ?rt2s_frequencies for when each regime is the right one.
 
 #' Seconds from a GTFS time column, tolerating already-numeric input
 #'
@@ -23,7 +23,7 @@ gtfs_time_secs <- function(x) {
 #' Reduces a planned static GTFS feed to \strong{one representative stop pattern
 #' per \code{(route, direction)}}: the pattern that the most trips actually
 #' operate, with its stop-to-stop offsets rebased to a trip start. This is the
-#' \emph{anchoring} counterpart to \code{\link{obs_travel_times}}, which
+#' \emph{anchoring} counterpart to \code{\link{rt2s_obs_travel_times}}, which
 #' reconstructs a pattern from observations instead.
 #'
 #' Use it when an analysis compares scenarios that must share an identical
@@ -32,7 +32,7 @@ gtfs_time_secs <- function(x) {
 #' different scenarios differ only in the service levels applied to them - so a
 #' scheduled-versus-observed contrast cannot be an artifact of the scenarios
 #' having different stop sets. Feed it to
-#' \code{snapshot_frequencies(pattern_source = "baseline")}.
+#' \code{rt2s_frequencies(pattern_source = "baseline")}.
 #'
 #' @section Pattern selection:
 #' Each trip is reduced to a \emph{signature}: its \code{stop_id}s in
@@ -48,7 +48,7 @@ gtfs_time_secs <- function(x) {
 #' layover before the vehicle starts moving is not travel time.
 #' \code{travel_base} is therefore negative at the origin stop (its arrival
 #' precedes that departure), which is intentional - the frequency assembler
-#' clamps it through \code{\link{monotone_offsets}}. \code{stop_sequence} is
+#' clamps it through \code{\link{rt2s_monotone_offsets}}. \code{stop_sequence} is
 #' renumbered densely from 1, since the baseline's own numbering may start
 #' anywhere and contain gaps (GTFS requires only that it increase).
 #'
@@ -59,7 +59,7 @@ gtfs_time_secs <- function(x) {
 #' @param route_key Which baseline column becomes \code{route_ref}, i.e. the
 #'   identity that must match \code{events$route_ref} downstream.
 #'   \code{"route_id"} (default) is the spec-canonical identity and what
-#'   \code{\link{snapshot_from_trip_updates}} writes. \code{"route_short_name"}
+#'   \code{\link{rt2s_events_from_trip_updates}} writes. \code{"route_short_name"}
 #'   suits observations keyed on the public line number; when several
 #'   \code{route_id}s share a short name they are collapsed with a warning.
 #' @param min_stops Minimum stops for a trip to be a pattern candidate. Default
@@ -77,8 +77,8 @@ gtfs_time_secs <- function(x) {
 #'   \code{departure_time} is missing (real feeds leave non-timepoint stops
 #'   blank). Excluding before counting means the modal rule simply picks among
 #'   fully timed trips; it is an error only if that empties a route-direction.
-#' @seealso \code{\link{baseline_headways}} for the planned feed's own headways,
-#'   \code{\link{snapshot_frequencies}} to assemble feeds from the result.
+#' @seealso \code{\link{rt2s_baseline_headways}} for the planned feed's own headways,
+#'   \code{\link{rt2s_frequencies}} to assemble feeds from the result.
 #' @examples
 #' baseline <- list(
 #'   trips = data.frame(
@@ -103,9 +103,9 @@ gtfs_time_secs <- function(x) {
 #'   )
 #' )
 #' # The 3-stop signature wins (2 trips vs 1); offsets rebase on 06:00:00.
-#' baseline_patterns(baseline)
+#' rt2s_baseline_patterns(baseline)
 #' @export
-baseline_patterns <- function(
+rt2s_baseline_patterns <- function(
   baseline,
   route_key = c("route_id", "route_short_name"),
   min_stops = 2L
@@ -226,16 +226,16 @@ baseline_patterns <- function(
 #' Reduces a planned static feed's own trip start times to one headway per
 #' \code{(route, direction, window)}: the gaps between consecutive scheduled
 #' departures, summarised. This is the planned counterpart to
-#' \code{\link{obs_headways}}, and it is what makes a "scheduled" scenario
+#' \code{\link{rt2s_obs_headways}}, and it is what makes a "scheduled" scenario
 #' expressible - a feed that keeps the published running times \emph{and} the
 #' published frequency, to contrast against observed ones.
 #'
-#' Feed the result to \code{snapshot_frequencies(headways=)} after tagging it
+#' Feed the result to \code{rt2s_frequencies(headways=)} after tagging it
 #' with the scenario it describes:
-#' \preformatted{sh <- baseline_headways(static, windows)
+#' \preformatted{sh <- rt2s_baseline_headways(static, windows)
 #' sh$scenario <- "scheduled"}
 #'
-#' @section Difference from \code{obs_headways()}:
+#' @section Difference from \code{rt2s_obs_headways()}:
 #' A static feed has no service dates, only a calendar, so gaps are \emph{not}
 #' grouped within a day the way observed trip starts are. Every trip the feed
 #' defines for a route-direction contributes to one pool per window. Restrict
@@ -245,11 +245,11 @@ baseline_patterns <- function(
 #' @param baseline A planned static GTFS feed: a gtfsio/gtfstools-style object or
 #'   a path to a GTFS zip. Requires \code{trips} and \code{stop_times}.
 #' @param windows Named list of \code{c(start, end)} time strings, as in
-#'   \code{\link{snapshot_frequencies}}; passed to \code{\link{time_window}}, so
+#'   \code{\link{rt2s_frequencies}}; passed to \code{\link{rt2s_time_window}}, so
 #'   overnight windows such as \code{c("22:00", "26:00")} work. Trips whose first
 #'   departure falls in no window are excluded.
 #' @param route_key Which baseline column becomes \code{route_ref}; see
-#'   \code{\link{baseline_patterns}}.
+#'   \code{\link{rt2s_baseline_patterns}}.
 #' @param statistic How to summarise the gaps: \code{"median"} (default) or
 #'   \code{"mean"}. Both are rounded to whole seconds.
 #' @param max_headway_secs Gaps above this are treated as between-service breaks
@@ -258,7 +258,7 @@ baseline_patterns <- function(
 #'   \code{window}, \code{headway_secs} (integer) and \code{n_sched_trips} (the
 #'   gaps summarised). Groups with fewer than two departures in a window yield no
 #'   row, since a single departure defines no headway.
-#' @seealso \code{\link{baseline_patterns}}, \code{\link{snapshot_frequencies}}
+#' @seealso \code{\link{rt2s_baseline_patterns}}, \code{\link{rt2s_frequencies}}
 #' @examples
 #' baseline <- list(
 #'   trips = data.frame(
@@ -283,9 +283,9 @@ baseline_patterns <- function(
 #'   )
 #' )
 #' # departures 06:00 / 06:10 / 06:25 -> gaps 600, 900 -> median 750
-#' baseline_headways(baseline, windows = list(am = c("06:00", "09:00")))
+#' rt2s_baseline_headways(baseline, windows = list(am = c("06:00", "09:00")))
 #' @export
-baseline_headways <- function(
+rt2s_baseline_headways <- function(
   baseline,
   windows,
   route_key = c("route_id", "route_short_name"),
@@ -314,7 +314,7 @@ baseline_headways <- function(
   trips <- baseline_trips(baseline, route_key)
   st <- baseline_stop_times(baseline, trips$trip_id)
 
-  # A trip starts when it first departs, which is also what obs_headways() uses
+  # A trip starts when it first departs, which is also what rt2s_obs_headways() uses
   # for observed runs, so the two are comparable.
   starts <- st[!is.na(dep_s), list(start_s = min(dep_s)), by = trip_id]
   starts <- merge(
@@ -329,9 +329,9 @@ baseline_headways <- function(
       call. = FALSE
     )
   }
-  # Numeric seconds go through time_window()'s pass-through branch, so a
+  # Numeric seconds go through rt2s_time_window()'s pass-through branch, so a
   # planned departure at "25:10:00" lands in an overnight window correctly.
-  starts[, window := time_window(start_s, windows = windows)]
+  starts[, window := rt2s_time_window(start_s, windows = windows)]
   starts <- starts[window != "other"]
   if (nrow(starts) == 0L) {
     stop(

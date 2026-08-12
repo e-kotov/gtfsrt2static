@@ -1,3 +1,74 @@
+# gtfsrt2static 0.5.0
+
+**Every exported function was renamed.** The package had no prefix at all and
+four competing sub-prefixes (`rt_`, `obs_`, `snapshot_`, `baseline_`) plus three
+unprefixed orphans. The public API is now uniformly `rt2s_`, derived from the
+package name the same way its sibling `gps2gtfs` derives `g2g_`, and reading as
+"realtime to static". There are **no deprecated aliases**: the package has no
+public users, and shims would outlive the reason they exist.
+
+| 0.4.0 | 0.5.0 |
+|---|---|
+| `rt_collect()` | `rt2s_collect()` |
+| `rt_coverage()` | `rt2s_archive_coverage()` |
+| `rt_rotate()` | `rt2s_archive_rotate()` |
+| `rt_service_template()` | `rt2s_service_template()` |
+| `snapshot_from_trip_updates()` | `rt2s_events_from_trip_updates()` |
+| `snapshot_from_stop_times()` | `rt2s_events_from_stop_times()` |
+| `validate_events()` | `rt2s_events_validate()` |
+| `obs_headways()` | `rt2s_obs_headways()` |
+| `obs_headways_by_passage()` | `rt2s_obs_headways(method = "passage")` |
+| `obs_travel_times()` | `rt2s_obs_travel_times()` |
+| `obs_stop_order()` | `rt2s_obs_stop_order()` |
+| `baseline_headways()` | `rt2s_baseline_headways()` |
+| `baseline_patterns()` | `rt2s_baseline_patterns()` |
+| `snapshot_assemble()` | `rt2s_assemble()` |
+| `snapshot_scaffold()` | `rt2s_scaffold()` |
+| `snapshot_frequencies()` | `rt2s_frequencies()` |
+| `snapshot_publishable()` | `rt2s_publishable()` |
+| `snapshot_grid()` | `rt2s_resolved_grid()` |
+| `time_window()` | `rt2s_time_window()` |
+| `monotone_offsets()` | `rt2s_monotone_offsets()` |
+
+Two of these are more than cosmetic. `snapshot_from_stop_times()` and
+`snapshot_from_trip_updates()` return **observed stop events**, not snapshots -
+as their own titles already said - so the new names stop them misdescribing
+their return type. `obs_`, `baseline_` and `events_` survive as *second* tokens
+because they mark the stage or the evidence source: `rt2s_obs_headways()` and
+`rt2s_baseline_headways()` are a deliberate pair, one measured and one planned.
+
+* **`obs_headways_by_passage()` is removed**, folded into
+  **`rt2s_obs_headways(method = c("trip_start", "passage"))`**. This is the only
+  behaviour change in the release. The package already expressed this same choice
+  one level up as `snapshot_frequencies(headway_method=)`, and saying it both as
+  an argument and as a separate function was the defect. Both implementations are
+  unchanged and dispatch is by `method`; `reference_stops` and
+  `min_revisit_gap_s` move onto the merged signature, where passing either under
+  `method = "trip_start"` warns rather than being silently dropped - the same
+  shape the assembler already used. The passage return still carries its extra
+  `reference_stop_ref` column and is otherwise column-compatible, so results feed
+  the frequency path exactly as before.
+
+  Note the argument order: `rt2s_obs_headways(events, windows, quantiles,
+  max_headway_secs, method, reference_stops, min_revisit_gap_s)`. Positional
+  calls written against `obs_headways()` still mean what they meant; positional
+  calls written against `obs_headways_by_passage()`, whose second argument was
+  `reference_stops`, do not.
+
+* **`rt2s_frequencies()` keeps `headway_method=`**; it did *not* become
+  `method=`. Inside a 20-argument assembler that also chooses a
+  `pattern_source` and a `scaling_missing` policy, a bare `method` does not say
+  *method of what*. The roxygen now records this so it is not later "fixed".
+
+* **Documentation corrections in the same pass.** Two titles that were a
+  question or a bare clause became noun phrases like their siblings
+  (`rt2s_publishable()`, `rt2s_resolved_grid()`). Three descriptions that defined
+  a public function by its internals - "the assembly module", "Used by
+  `snapshot_assemble()`", "Used by `obs_headways()`" - now lead with what the
+  caller gets and mention the internal relationship second.
+
+No emitted feed byte changes in this release.
+
 # gtfsrt2static 0.4.0
 
 `snapshot_frequencies()` can now emit a **mixed feed**: frequency-based trips

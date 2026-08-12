@@ -22,8 +22,8 @@ two_windows <- function() {
   list(early = c("06:00", "06:15"), later = c("06:15", "09:00"))
 }
 
-test_that("snapshot_frequencies emits one feed per scenario with exact numbers", {
-  feeds <- snapshot_frequencies(
+test_that("rt2s_frequencies emits one feed per scenario with exact numbers", {
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
@@ -56,7 +56,7 @@ test_that("snapshot_frequencies emits one feed per scenario with exact numbers",
 })
 
 test_that("scenarios order as reliable >= median >= structural", {
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
@@ -73,7 +73,7 @@ test_that("scenarios order as reliable >= median >= structural", {
 })
 
 test_that("feed is referentially consistent and gtfsio-shaped", {
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
@@ -90,11 +90,11 @@ test_that("feed is referentially consistent and gtfsio-shaped", {
   expect_identical(f$calendar$tuesday, 1L)
   expect_identical(f$calendar$sunday, 0L)
   # publishable: full agency + coords -> no blockers
-  expect_true(snapshot_publishable(f)$publishable)
+  expect_true(rt2s_publishable(f)$publishable)
 })
 
-test_that("monotone_offsets clamps, rounds, and propagates dwell", {
-  offsets <- monotone_offsets(
+test_that("rt2s_monotone_offsets clamps, rounds, and propagates dwell", {
+  offsets <- rt2s_monotone_offsets(
     travel = c(-2.4, 10.6, 8.2, 11.2),
     dwell = c(-0.4, 1.6, 3.4, 0.6)
   )
@@ -106,10 +106,10 @@ test_that("monotone_offsets clamps, rounds, and propagates dwell", {
   expect_true(all(diff(offsets$departure) >= 0L))
 })
 
-test_that("monotone_offsets validates its input vectors", {
-  expect_error(monotone_offsets(c(0, 1), 0), "equal length")
-  expect_error(monotone_offsets(c(0, NA), c(0, 1)), "finite numeric")
-  expect_error(monotone_offsets(c(0, Inf), c(0, 1)), "finite numeric")
+test_that("rt2s_monotone_offsets validates its input vectors", {
+  expect_error(rt2s_monotone_offsets(c(0, 1), 0), "equal length")
+  expect_error(rt2s_monotone_offsets(c(0, NA), c(0, 1)), "finite numeric")
+  expect_error(rt2s_monotone_offsets(c(0, Inf), c(0, 1)), "finite numeric")
 })
 
 test_that("monotonicity guard forces non-decreasing representative times", {
@@ -123,10 +123,10 @@ test_that("monotonicity guard forces non-decreasing representative times", {
     dwell = 0L
   )
   # canonical order S0(0) < Y(250) < X(500); raw p05: Y=205 > X=140 (non-monotone)
-  tt <- obs_travel_times(ev)
+  tt <- rt2s_obs_travel_times(ev)
   expect_lt(tt[stop_ref == "X", travel_p05], tt[stop_ref == "Y", travel_p05])
 
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     ev, windows = list(am = c("06:00", "09:00")),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
     stops = data.frame(
@@ -142,19 +142,19 @@ test_that("monotonicity guard forces non-decreasing representative times", {
 test_that("missing coordinates / agency are publish blockers (or strict errors)", {
   ev <- make_events_clean()
   win <- list(am = c("06:00", "09:00"))
-  feeds <- suppressWarnings(snapshot_frequencies(ev, windows = win))
-  st <- snapshot_publishable(feeds$median)
+  feeds <- suppressWarnings(rt2s_frequencies(ev, windows = win))
+  st <- rt2s_publishable(feeds$median)
   expect_false(st$publishable)
   expect_true(any(grepl("agency", st$blockers)))
   expect_true(any(grepl("coordinates", st$blockers)))
   # every scenario carries the same blockers
-  expect_false(snapshot_publishable(feeds$reliable)$publishable)
+  expect_false(rt2s_publishable(feeds$reliable)$publishable)
   # strict -> error
-  expect_error(snapshot_frequencies(ev, windows = win, strict = TRUE))
+  expect_error(rt2s_frequencies(ev, windows = win, strict = TRUE))
 })
 
 test_that("skipped stops never leak NA into generated GTFS clock fields", {
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_with_skipped(),
     windows = list(am_peak = c("06:00", "09:00")),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
@@ -174,10 +174,10 @@ test_that("skipped stops never leak NA into generated GTFS clock fields", {
   }
 })
 
-test_that("snapshot_frequencies rejects trips whose only timed rows are unserved", {
+test_that("rt2s_frequencies rejects trips whose only timed rows are unserved", {
   # skipped-only 'trips' with stale times produce no served start -> no headway
   expect_error(
-    suppressWarnings(snapshot_frequencies(
+    suppressWarnings(rt2s_frequencies(
       make_events_skipped_only_trips(),
       windows = list(am = c("06:00", "09:00"))
     )),
@@ -185,16 +185,16 @@ test_that("snapshot_frequencies rejects trips whose only timed rows are unserved
   )
 })
 
-test_that("snapshot_frequencies can use passage-derived headways", {
+test_that("rt2s_frequencies can use passage-derived headways", {
   ev <- make_events_shared_trip_ref_passages()
   win <- list(am = c("06:00", "09:00"))
   expect_error(
-    suppressWarnings(snapshot_frequencies(ev, windows = win)),
+    suppressWarnings(rt2s_frequencies(ev, windows = win)),
     "trip-start headway"
   )
 
   expect_warning(
-    feeds <- snapshot_frequencies(
+    feeds <- rt2s_frequencies(
       ev,
       windows = win,
       quantiles = c(median = 0.5),
@@ -207,13 +207,13 @@ test_that("snapshot_frequencies can use passage-derived headways", {
   )
   expect_identical(names(feeds), "median")
   expect_identical(feeds$median$frequencies$headway_secs, 750L)
-  expect_true(snapshot_publishable(feeds$median)$publishable)
+  expect_true(rt2s_publishable(feeds$median)$publishable)
 })
 
-test_that("snapshot_frequencies excludes unknown-direction passage groups", {
+test_that("rt2s_frequencies excludes unknown-direction passage groups", {
   expect_warning(
     expect_warning(
-      feeds <- snapshot_frequencies(
+      feeds <- rt2s_frequencies(
         make_events_partly_unknown_direction(),
         windows = list(am = c("06:00", "09:00")),
         quantiles = c(median = 0.5),
@@ -265,10 +265,10 @@ test_that("snapshot_frequencies excludes unknown-direction passage groups", {
   )
 })
 
-test_that("snapshot_frequencies reports all-unknown passage directions", {
+test_that("rt2s_frequencies reports all-unknown passage directions", {
   expect_warning(
     expect_error(
-      snapshot_frequencies(
+      rt2s_frequencies(
         make_events_all_unknown_direction(),
         windows = list(am = c("06:00", "09:00")),
         quantiles = c(median = 0.5),
@@ -283,16 +283,16 @@ test_that("snapshot_frequencies reports all-unknown passage directions", {
   )
 })
 
-test_that("snapshot_frequencies default and explicit trip-start methods match", {
+test_that("rt2s_frequencies default and explicit trip-start methods match", {
   args <- list(
     events = make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
     stops = freq_stops()
   )
-  default <- do.call(snapshot_frequencies, args)
+  default <- do.call(rt2s_frequencies, args)
   explicit <- do.call(
-    snapshot_frequencies,
+    rt2s_frequencies,
     c(args, list(headway_method = "trip_start"))
   )
   expect_identical(
@@ -309,7 +309,7 @@ test_that("snapshot_frequencies default and explicit trip-start methods match", 
   )
 })
 
-test_that("snapshot_frequencies warns about ignored passage arguments", {
+test_that("rt2s_frequencies warns about ignored passage arguments", {
   args <- list(
     events = make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
@@ -317,20 +317,20 @@ test_that("snapshot_frequencies warns about ignored passage arguments", {
     stops = freq_stops()
   )
   expect_warning(
-    do.call(snapshot_frequencies, c(args, list(reference_stops = "S1"))),
+    do.call(rt2s_frequencies, c(args, list(reference_stops = "S1"))),
     "reference_stops"
   )
   expect_warning(
-    do.call(snapshot_frequencies, c(args, list(min_revisit_gap_s = 60L))),
+    do.call(rt2s_frequencies, c(args, list(min_revisit_gap_s = 60L))),
     "min_revisit_gap_s"
   )
 })
 
-test_that("snapshot_frequencies reports passage-specific empty-headway errors", {
-  events <- snapshot_from_trip_updates(make_updates())
+test_that("rt2s_frequencies reports passage-specific empty-headway errors", {
+  events <- rt2s_events_from_trip_updates(make_updates())
   expect_warning(
     expect_error(
-      snapshot_frequencies(
+      rt2s_frequencies(
         events,
         windows = list(am = c("06:00", "09:00")),
         headway_method = "passage",
@@ -342,17 +342,17 @@ test_that("snapshot_frequencies reports passage-specific empty-headway errors", 
   )
 })
 
-test_that("snapshot_frequencies validates its arguments", {
+test_that("rt2s_frequencies validates its arguments", {
   ev <- make_events_clean()
-  expect_error(snapshot_frequencies(ev), "windows")
-  expect_error(snapshot_frequencies(ev, windows = list(c("06:00", "09:00"))), "named")
+  expect_error(rt2s_frequencies(ev), "windows")
+  expect_error(rt2s_frequencies(ev, windows = list(c("06:00", "09:00"))), "named")
   expect_error(
-    snapshot_frequencies(ev, windows = list(am = c("06:00", "09:00")), exact_times = 2L),
+    rt2s_frequencies(ev, windows = list(am = c("06:00", "09:00")), exact_times = 2L),
     "exact_times"
   )
   # no multi-run group -> informative error
   expect_error(
-    suppressWarnings(snapshot_frequencies(
+    suppressWarnings(rt2s_frequencies(
       make_events_degenerate()[route_ref == "R3"],
       windows = list(am = c("08:00", "10:00"))
     )),
@@ -366,7 +366,7 @@ test_that("quantiles can decouple travel time from headway", {
   # The point of the list form: a free-flow running time at a *typical*
   # frequency. Coupled quantiles cannot express this - a p05 travel time would
   # drag a p05 headway (612) along with it.
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     quantiles = list(
@@ -393,7 +393,7 @@ test_that("quantiles can decouple travel time from headway", {
 })
 
 test_that("quantiles decouple in the other direction too", {
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     quantiles = list(mixed = c(travel = 0.05, headway = 0.95)),
@@ -415,16 +415,16 @@ test_that("a coupled list is identical to the bare numeric form", {
     stops = freq_stops()
   )
   bare <- do.call(
-    snapshot_frequencies,
+    rt2s_frequencies,
     c(args, list(quantiles = c(structural = 0.05, median = 0.5)))
   )
   listed <- do.call(
-    snapshot_frequencies,
+    rt2s_frequencies,
     c(args, list(quantiles = list(structural = 0.05, median = 0.5)))
   )
   # An omitted side inherits the given one, so this is also identical.
   inherited <- do.call(
-    snapshot_frequencies,
+    rt2s_frequencies,
     c(args, list(quantiles = list(
       structural = c(travel = 0.05),
       median = c(headway = 0.5)
@@ -441,7 +441,7 @@ test_that("a coupled list is identical to the bare numeric form", {
 test_that("all scenario feeds share one trip set", {
   # The fixture's runs start 06:00/06:10/06:22/06:40, so this boundary is what
   # actually splits them into two populated windows (one gap each).
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = two_windows(),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
@@ -462,7 +462,7 @@ test_that("resolve_quantiles rejects malformed scenario quantiles", {
   ev <- make_events_clean()
   win <- list(am = c("06:00", "09:00"))
   bad <- function(q) {
-    expect_error(snapshot_frequencies(ev, windows = win, quantiles = q))
+    expect_error(rt2s_frequencies(ev, windows = win, quantiles = q))
   }
   bad(list())
   bad(list(0.5))
@@ -471,7 +471,7 @@ test_that("resolve_quantiles rejects malformed scenario quantiles", {
   bad(list(a = "0.5"))
   bad(c(a = 0.5, a = 0.6))
   expect_error(
-    snapshot_frequencies(
+    rt2s_frequencies(
       ev,
       windows = win,
       quantiles = data.frame(a = 0.5)
@@ -483,7 +483,7 @@ test_that("resolve_quantiles rejects malformed scenario quantiles", {
 # --- FR-1: baseline-anchored patterns ---------------------------------------
 
 anchored_feeds <- function(scenarios, ratio, ...) {
-  snapshot_frequencies(
+  rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     quantiles = stats::setNames(rep(0.5, length(scenarios)), scenarios),
@@ -525,7 +525,7 @@ test_that("baseline ratios vary independently by window and by scenario", {
     make_scaling("slow", 3, window = "early"),
     make_scaling("slow", 4, window = "later")
   )
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = two_windows(),
     quantiles = c(fast = 0.5, slow = 0.5),
@@ -551,7 +551,7 @@ test_that("trips sharing a pattern and ratio resolve once, without fan-out", {
   # Two windows, same ratio: internally both trips map to a single scaled
   # pattern (the offsets are resolved per distinct pattern-ratio pair, not per
   # trip). This pins that the de-duplication neither drops nor duplicates rows.
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = two_windows(),
     quantiles = c(median = 0.5),
@@ -579,7 +579,7 @@ test_that("baseline mode inherits agency, stops and real route_type", {
   # No agency= or stops= given: a complete baseline supplies both, so there is
   # nothing left to block publication.
   f <- anchored_feeds("median", 1)$median
-  expect_true(snapshot_publishable(f)$publishable)
+  expect_true(rt2s_publishable(f)$publishable)
   expect_identical(f$agency$agency_name, "Baseline Transit")
   expect_identical(f$agency$agency_id, "AGB")
   expect_true(all(!is.na(f$stops$stop_lat)))
@@ -616,11 +616,11 @@ test_that("baseline mode rejects incoherent argument combinations", {
   ev <- make_events_clean()
   win <- list(am_peak = c("06:00", "09:00"))
   expect_error(
-    snapshot_frequencies(ev, windows = win, pattern_source = "baseline"),
+    rt2s_frequencies(ev, windows = win, pattern_source = "baseline"),
     "needs a 'baseline'"
   )
   expect_error(
-    snapshot_frequencies(
+    rt2s_frequencies(
       ev,
       windows = win,
       baseline = make_baseline_freq(),
@@ -629,11 +629,11 @@ test_that("baseline mode rejects incoherent argument combinations", {
     "needs 'scaling'"
   )
   expect_error(
-    snapshot_frequencies(ev, windows = win, baseline = make_baseline_freq()),
+    rt2s_frequencies(ev, windows = win, baseline = make_baseline_freq()),
     "pattern_source is \"observed\""
   )
   expect_error(
-    snapshot_frequencies(
+    rt2s_frequencies(
       ev,
       windows = win,
       scaling = make_scaling("median", 1)
@@ -645,7 +645,7 @@ test_that("baseline mode rejects incoherent argument combinations", {
 test_that("scaling is validated per cell", {
   bad <- function(scaling, regexp) {
     expect_error(
-      snapshot_frequencies(
+      rt2s_frequencies(
         make_events_clean(),
         windows = list(am_peak = c("06:00", "09:00")),
         quantiles = c(median = 0.5),
@@ -675,7 +675,7 @@ test_that("a missing scaling cell errors, or drops from every scenario", {
     make_scaling("a", 1, window = "later")
   )
   call_it <- function(...) {
-    snapshot_frequencies(
+    rt2s_frequencies(
       ev,
       windows = two_windows(),
       quantiles = c(a = 0.5, b = 0.5),
@@ -697,7 +697,7 @@ test_that("a disjoint route identity is a dedicated error", {
   b$trips$route_id <- "OTHER"
   b$routes$route_id <- "OTHER"
   expect_error(
-    snapshot_frequencies(
+    rt2s_frequencies(
       make_events_clean(),
       windows = list(am_peak = c("06:00", "09:00")),
       quantiles = c(median = 0.5),
@@ -713,9 +713,9 @@ test_that("a disjoint route identity is a dedicated error", {
 
 test_that("headways= overrides the observed quantile for named cells only", {
   windows <- list(am_peak = c("06:00", "09:00"))
-  sh <- baseline_headways(make_baseline_freq(), windows = windows)
+  sh <- rt2s_baseline_headways(make_baseline_freq(), windows = windows)
   sh$scenario <- "scheduled"
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = windows,
     quantiles = list(scheduled = c(headway = 0.5), median = 0.5),
@@ -737,7 +737,7 @@ test_that("headways= overrides the observed quantile for named cells only", {
 test_that("headways= is validated and ignores cells that are not emitted", {
   windows <- list(am_peak = c("06:00", "09:00"))
   base_call <- function(headways) {
-    snapshot_frequencies(
+    rt2s_frequencies(
       make_events_clean(),
       windows = windows,
       quantiles = c(median = 0.5),
@@ -769,13 +769,13 @@ test_that("headways= is validated and ignores cells that are not emitted", {
 # --- FR-6: the resolved grid ------------------------------------------------
 
 test_that("the resolved grid covers every cell x scenario in observed mode", {
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = two_windows(),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
     stops = freq_stops()
   )
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
 
   expect_s3_class(grid, "data.table")
   expect_identical(
@@ -799,13 +799,13 @@ test_that("the resolved grid covers every cell x scenario in observed mode", {
 })
 
 test_that("the grid's emitted rows reconcile against what was written", {
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = two_windows(),
     agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
     stops = freq_stops()
   )
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
 
   # This is the invariant the downstream drop funnel asserts: the grid's final
   # stage equals the trips actually written, per scenario.
@@ -834,7 +834,7 @@ test_that("cells dropped for want of a ratio stay in the grid, flagged", {
     make_scaling("a", 1, window = "later")
   )
   expect_warning(
-    feeds <- snapshot_frequencies(
+    feeds <- rt2s_frequencies(
       make_events_clean(),
       windows = two_windows(),
       quantiles = c(a = 0.5, b = 0.5),
@@ -845,7 +845,7 @@ test_that("cells dropped for want of a ratio stay in the grid, flagged", {
     ),
     "dropped from every"
   )
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
 
   # Both candidate cells are still accounted for in both scenarios, even though
   # only one of them reached either feed.
@@ -880,7 +880,7 @@ test_that("a cell with a headway but no stop pattern is flagged, not silent", {
   )
   ev <- rbind(make_events_clean(), r2)
   expect_warning(
-    feeds <- snapshot_frequencies(
+    feeds <- rt2s_frequencies(
       ev,
       windows = list(am_peak = c("06:00", "09:00")),
       quantiles = c(median = 0.5),
@@ -890,7 +890,7 @@ test_that("a cell with a headway but no stop pattern is flagged, not silent", {
     ),
     "no baseline"
   )
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
   expect_identical(sort(unique(grid$route_ref)), c("R1", "R2"))
   expect_identical(grid[route_ref == "R2"]$drop_reason, "no_stop_pattern")
   expect_false(grid[route_ref == "R2"]$emitted)
@@ -900,9 +900,9 @@ test_that("a cell with a headway but no stop pattern is flagged, not silent", {
 
 test_that("the grid distinguishes an overridden headway from an observed one", {
   windows <- list(am_peak = c("06:00", "09:00"))
-  sh <- baseline_headways(make_baseline_freq(), windows = windows)
+  sh <- rt2s_baseline_headways(make_baseline_freq(), windows = windows)
   sh$scenario <- "scheduled"
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = windows,
     quantiles = list(scheduled = c(headway = 0.5), median = 0.5),
@@ -911,7 +911,7 @@ test_that("the grid distinguishes an overridden headway from an observed one", {
     scaling = make_scaling(c("scheduled", "median"), 1),
     headways = sh
   )
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
   expect_identical(grid[scenario == "scheduled"]$headway_source, "override")
   expect_identical(grid[scenario == "scheduled"]$headway_secs, 750L)
   expect_identical(grid[scenario == "median"]$headway_source, "observed")
@@ -920,15 +920,15 @@ test_that("the grid distinguishes an overridden headway from an observed one", {
 
 test_that("the grid records the ratio actually applied, per scenario", {
   feeds <- anchored_feeds(c("fast", "slow"), c(0.5, 2))
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
   expect_identical(grid[scenario == "fast"]$ratio, 0.5)
   expect_identical(grid[scenario == "slow"]$ratio, 2)
 })
 
-test_that("snapshot_grid rejects anything that is not a frequency feed set", {
-  expect_error(snapshot_grid(list()), "no resolved grid")
-  scaffold <- suppressWarnings(snapshot_scaffold(make_events_clean()))
-  expect_error(snapshot_grid(scaffold), "no resolved grid")
+test_that("rt2s_resolved_grid rejects anything that is not a frequency feed set", {
+  expect_error(rt2s_resolved_grid(list()), "no resolved grid")
+  scaffold <- suppressWarnings(rt2s_scaffold(make_events_clean()))
+  expect_error(rt2s_resolved_grid(scaffold), "no resolved grid")
 })
 
 # --- extra_trips (FR-5) -------------------------------------------------------
@@ -939,7 +939,7 @@ test_that("snapshot_grid rejects anything that is not a frequency feed set", {
 
 # Frequency material and extra trips over the same events, with S9 reachable.
 extra_feeds <- function(extra_trips, ...) {
-  suppressWarnings(snapshot_frequencies(
+  suppressWarnings(rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     stops = make_stops_with_extra(),
@@ -992,7 +992,7 @@ test_that("an extra trip on a baseline route with no observed headway is emitted
     route_long_name = "Unobserved Line",
     route_type = 0L
   ))
-  feeds <- suppressWarnings(snapshot_frequencies(
+  feeds <- suppressWarnings(rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     quantiles = c(median = 0.5),
@@ -1052,7 +1052,7 @@ test_that("extra trips are not rows of the resolved grid", {
   # Extra trips are not cells, and adding them would produce rows whose
   # route_ref, window, ratio, headway_secs and drop_reason are all NA.
   feeds <- extra_feeds(list(median = make_extra_trips(c("X1", "X2"))))
-  grid <- snapshot_grid(feeds)
+  grid <- rt2s_resolved_grid(feeds)
   expect_false(any(c("X1", "X2") %in% grid$trip_id))
   expect_identical(nrow(grid), 3L)
   # so the funnel closes only when the caller adds back the ids it supplied
@@ -1068,9 +1068,9 @@ test_that("extra_trips = NULL leaves every feed byte-identical", {
     windows = list(am_peak = c("06:00", "09:00")),
     stops = make_stops_with_extra()
   )
-  without <- suppressWarnings(do.call(snapshot_frequencies, args))
+  without <- suppressWarnings(do.call(rt2s_frequencies, args))
   explicit <- suppressWarnings(
-    do.call(snapshot_frequencies, c(args, list(extra_trips = NULL)))
+    do.call(rt2s_frequencies, c(args, list(extra_trips = NULL)))
   )
   expect_identical(without, explicit)
 })

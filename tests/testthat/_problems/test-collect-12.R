@@ -14,4 +14,4 @@ config <- data.frame(
     url = paste0("file://", src),
     interval_s = 0
   )
-summary <- rt_collect(config, dir = archive, max_polls = 3)
+summary <- rt2s_collect(config, dir = archive, max_polls = 3)

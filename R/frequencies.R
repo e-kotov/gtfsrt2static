@@ -22,12 +22,12 @@
 #'   offset and the previous returned departure. This satisfies GTFS along-trip
 #'   monotonicity even when independently estimated offsets are out of order.
 #' @examples
-#' monotone_offsets(
+#' rt2s_monotone_offsets(
 #'   travel = c(-2.4, 300.6, 298.2),
 #'   dwell = c(0, 30.6, 15)
 #' )
 #' @export
-monotone_offsets <- function(travel, dwell) {
+rt2s_monotone_offsets <- function(travel, dwell) {
   if (
     !is.numeric(travel) ||
       !is.numeric(dwell) ||
@@ -72,12 +72,12 @@ monotone_offsets <- function(travel, dwell) {
 #' (\code{exact_times = 0} frequency semantics: only relative offsets matter),
 #' clamped non-decreasing. Spec-required surrounding files (agency, routes,
 #' stops, calendar, feed_info) and the publish gate are built exactly as
-#' \code{\link{snapshot_scaffold}} builds them.
+#' \code{\link{rt2s_scaffold}} builds them.
 #'
 #' @section Reconstructed versus anchored stop patterns:
 #' This function \strong{reconstructs} a representative stop pattern from the
-#' observations themselves, via \code{\link{obs_travel_times}} and the canonical
-#' cross-trip order of \code{\link{obs_stop_order}}. That is the right regime
+#' observations themselves, via \code{\link{rt2s_obs_travel_times}} and the canonical
+#' cross-trip order of \code{\link{rt2s_obs_stop_order}}. That is the right regime
 #' when no usable published pattern exists - GPS-only data, an operator with no
 #' static feed, or a network whose published patterns do not match what runs.
 #'
@@ -88,13 +88,13 @@ monotone_offsets <- function(travel, dwell) {
 #' scheduled-versus-observed contrast then confounds "service got slower" with
 #' "the network changed". For that design, \strong{anchor} on the published
 #' pattern instead and vary only service levels: see
-#' \code{\link{baseline_patterns}} and \code{pattern_source = "baseline"}.
+#' \code{\link{rt2s_baseline_patterns}} and \code{pattern_source = "baseline"}.
 #'
 #' @param events Observed stop events (see \link{observed-stop-events}).
 #'   Restrict them to the service dates that form one service pattern before
 #'   calling (e.g. weekdays only) - no day-type filtering is imposed here.
 #' @param windows Named list of \code{c(start, end)} time strings defining the
-#'   frequency windows, passed to \code{\link{time_window}} (overnight windows
+#'   frequency windows, passed to \code{\link{rt2s_time_window}} (overnight windows
 #'   such as \code{c("22:00", "26:00")} are supported). Required: a
 #'   frequency-based feed needs defined windows. Trips outside every window are
 #'   not emitted.
@@ -120,7 +120,7 @@ monotone_offsets <- function(travel, dwell) {
 #'   pattern comes from \code{baseline} scaled by \code{scaling}), so a scenario
 #'   may give only \code{c(headway = ...)}.
 #' @param agency,stops,route_type,feed_lang,feed_contact_email,feed_contact_url,strict
-#'   As in \code{\link{snapshot_scaffold}} - agency metadata, stop coordinates,
+#'   As in \code{\link{rt2s_scaffold}} - agency metadata, stop coordinates,
 #'   route type, feed language/contacts, and the strict publish gate. Missing
 #'   agency or stop coordinates are recorded as publish blockers on every
 #'   returned feed (or error under \code{strict}).
@@ -129,21 +129,26 @@ monotone_offsets <- function(travel, dwell) {
 #'   over the observed date range. Default \code{"SVC1"}.
 #' @param exact_times \code{frequencies.exact_times}: \code{0} (default,
 #'   frequency-based) or \code{1} (schedule-based).
-#' @param max_headway_secs Passed to \code{\link{obs_headways}} or
-#'   \code{\link{obs_headways_by_passage}}; gaps above it are treated as
-#'   between-service breaks. Default 10800 (3 h).
-#' @param headway_method How to estimate headways. \code{"trip_start"}
-#'   (default) uses \code{\link{obs_headways}}, requiring one usable
-#'   \code{trip_ref} per run. \code{"passage"} uses
-#'   \code{\link{obs_headways_by_passage}}, measuring intervals at one
-#'   direction-unique reference stop per route-direction. This changes only
-#'   the frequency headway; representative travel-time patterns still come
-#'   from \code{\link{obs_travel_times}} and need events whose \code{trip_ref}
-#'   values make stop offsets meaningful.
+#' @param max_headway_secs Passed to \code{\link{rt2s_obs_headways}}; gaps above
+#'   it are treated as between-service breaks. Default 10800 (3 h).
+#' @param headway_method How to estimate headways, passed to
+#'   \code{\link{rt2s_obs_headways}} as its \code{method}. \code{"trip_start"}
+#'   (default) requires one usable \code{trip_ref} per run; \code{"passage"}
+#'   measures intervals at one direction-unique reference stop per
+#'   route-direction. This changes only the frequency headway; representative
+#'   travel-time patterns still come from \code{\link{rt2s_obs_travel_times}} and
+#'   need events whose \code{trip_ref} values make stop offsets meaningful.
+#'
+#'   The argument is deliberately \strong{not} named \code{method} here, even
+#'   though that is what \code{\link{rt2s_obs_headways}} calls it. The two live
+#'   at different altitudes: inside a 20-argument assembler that also chooses a
+#'   \code{pattern_source} and a \code{scaling_missing} policy, a bare
+#'   \code{method} does not say \emph{method of what}. It is not an oversight to
+#'   be tidied up.
 #' @param reference_stops,min_revisit_gap_s Passed to
-#'   \code{\link{obs_headways_by_passage}} when
-#'   \code{headway_method = "passage"}. Explicit values are ignored with a
-#'   warning when \code{headway_method = "trip_start"}.
+#'   \code{\link{rt2s_obs_headways}} when \code{headway_method = "passage"}.
+#'   Explicit values are ignored with a warning when
+#'   \code{headway_method = "trip_start"}.
 #' @param baseline Optional planned static GTFS feed to anchor stop patterns on:
 #'   a gtfsio/gtfstools-style object or a path to a GTFS zip. Required with
 #'   \code{pattern_source = "baseline"} and rejected without it.
@@ -165,8 +170,8 @@ monotone_offsets <- function(travel, dwell) {
 #'   than given an invented headway.
 #' @param pattern_source Where the representative stop pattern comes from.
 #'   \code{"observed"} (default) reconstructs it from \code{events} via
-#'   \code{\link{obs_travel_times}}. \code{"baseline"} anchors on the published
-#'   pattern from \code{baseline} (see \code{\link{baseline_patterns}}) and
+#'   \code{\link{rt2s_obs_travel_times}}. \code{"baseline"} anchors on the published
+#'   pattern from \code{baseline} (see \code{\link{rt2s_baseline_patterns}}) and
 #'   scales it by \code{scaling}, so every scenario emits the same stops in the
 #'   same order. See the section above for which regime fits.
 #' @param scaling Running-time ratios, required with
@@ -187,11 +192,11 @@ monotone_offsets <- function(travel, dwell) {
 #'   positive \code{headway_secs}. It supersedes the quantile-derived headway for
 #'   exactly the cells it lists; unlisted cells keep their observed value. This
 #'   is how a scenario whose frequency does not come from observations at all -
-#'   a planned "scheduled" feed, via \code{\link{baseline_headways}} - is
+#'   a planned "scheduled" feed, via \code{\link{rt2s_baseline_headways}} - is
 #'   expressed without a second way of naming scenarios. Rows naming a cell that
 #'   is not emitted are ignored with a warning.
 #' @param route_key Which baseline column supplies route identity, passed to
-#'   \code{\link{baseline_patterns}}. Baseline mode only.
+#'   \code{\link{rt2s_baseline_patterns}}. Baseline mode only.
 #' @param extra_trips Optional individually-timed trips to add to the emitted
 #'   feeds, as a \strong{named list keyed by scenario name} - the same names as
 #'   \code{quantiles}, which is the single source of scenario identity, so a
@@ -232,7 +237,7 @@ monotone_offsets <- function(travel, dwell) {
 #'   is scoped to the \emph{generated frequency} trips, which is where
 #'   \code{scaling_missing} enforces it.
 #'
-#'   Extra trips are \strong{not} rows of \code{\link{snapshot_grid}}: the grid
+#'   Extra trips are \strong{not} rows of \code{\link{rt2s_resolved_grid}}: the grid
 #'   is one row per candidate \code{(route, direction, window)} cell and extra
 #'   trips are not cells. Reconciling a feed's \code{trips.txt} therefore means
 #'   \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
@@ -240,7 +245,7 @@ monotone_offsets <- function(travel, dwell) {
 #' @return A named list of gtfsio-convention feed objects, one per quantile
 #'   (e.g. \code{$structural}, \code{$median}, \code{$reliable}); write each
 #'   with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
-#'   \code{publish_blockers} attributes (see \code{\link{snapshot_publishable}}).
+#'   \code{publish_blockers} attributes (see \code{\link{rt2s_publishable}}).
 #'
 #'   All scenario feeds share one \emph{generated} trip set by construction:
 #'   \code{trip_id} is \code{route_direction_window} and is resolved once, before
@@ -251,12 +256,12 @@ monotone_offsets <- function(travel, dwell) {
 #'   The list carries a \code{resolved_grid} attribute: one row per candidate
 #'   \code{(route, direction, window)} and scenario, recording the ratio and
 #'   headway actually applied and, for cells that never reached the feed, why.
-#'   Read it with \code{\link{snapshot_grid}}. Cells dropped for want of a stop
+#'   Read it with \code{\link{rt2s_resolved_grid}}. Cells dropped for want of a stop
 #'   pattern or a ratio are present and flagged rather than absent, so the grid
 #'   reconciles against a caller's own drop accounting.
-#' @seealso \code{\link{snapshot_grid}} for the resolved grid.
+#' @seealso \code{\link{rt2s_resolved_grid}} for the resolved grid.
 #' @export
-snapshot_frequencies <- function(
+rt2s_frequencies <- function(
   events,
   windows,
   quantiles = c(structural = 0.05, median = 0.5, reliable = 0.95),
@@ -281,7 +286,7 @@ snapshot_frequencies <- function(
   route_key = c("route_id", "route_short_name"),
   extra_trips = NULL
 ) {
-  dt <- validate_events(events)
+  dt <- rt2s_events_validate(events)
   q <- resolve_quantiles(quantiles)
   headway_method <- match.arg(headway_method)
   pattern_source <- match.arg(pattern_source)
@@ -360,15 +365,19 @@ snapshot_frequencies <- function(
   # Travel and headway probabilities are resolved separately (see
   # resolve_quantiles()) but share their names, so the scenario-keyed column
   # lookups below are unaffected by which spelling the caller used.
+  # The two headway paths are called directly rather than through
+  # rt2s_obs_headways(): its missing()-based ignored-argument warning cannot see
+  # through this frame, and the equivalent warning was already raised above
+  # against 'headway_method'.
   hw <- if (identical(headway_method, "trip_start")) {
-    obs_headways(
+    headways_by_trip_start(
       dt,
       windows = windows,
       quantiles = q$headway,
       max_headway_secs = max_headway_secs
     )
   } else {
-    obs_headways_by_passage(
+    headways_by_passage(
       dt,
       reference_stops = reference_stops,
       windows = windows,
@@ -379,12 +388,12 @@ snapshot_frequencies <- function(
   }
   hw <- hw[window != "other"]
   # The representative pattern comes from one of two sources. In baseline mode
-  # obs_travel_times() is not called at all: the pattern is the operator's
+  # rt2s_obs_travel_times() is not called at all: the pattern is the operator's
   # published one and the travel side of 'quantiles' is inert (documented).
   pat <- if (anchored) {
-    baseline_patterns(baseline, route_key = route_key)
+    rt2s_baseline_patterns(baseline, route_key = route_key)
   } else {
-    obs_travel_times(dt, q$travel)
+    rt2s_obs_travel_times(dt, q$travel)
   }
   if (nrow(hw) == 0L) {
     if (identical(headway_method, "trip_start")) {
@@ -424,7 +433,7 @@ snapshot_frequencies <- function(
   win_end <- vapply(windows, function(w) secs_to_clock(hms_to_secs(w[2])), "")
 
   # (route, direction) that have a stop pattern; drop groups lacking one.
-  # In observed mode obs_headways and obs_travel_times share one "served"
+  # In observed mode rt2s_obs_headways and rt2s_obs_travel_times share one "served"
   # definition, so a headway group is normally guaranteed a pattern - the
   # drop/guard below are a backstop against a broken invariant, never returning
   # an empty feed. In baseline mode the two sides come from different feeds, so
@@ -1206,16 +1215,16 @@ resolved_grid <- function(cells, scen, ratios, built, dropped) {
   grid[]
 }
 
-#' What a Frequency Feed Set Was Built From
+#' Resolved Cell Grid Behind a Frequency Feed Set
 #'
 #' Returns the resolved \code{(route, direction, window, scenario)} grid that
-#' \code{\link{snapshot_frequencies}} built from: what was emitted, what was
+#' \code{\link{rt2s_frequencies}} built from: what was emitted, what was
 #' applied to it, and what was dropped before it reached the feed. This is the
 #' programmatic counterpart to the assembly warnings - a pipeline that
 #' reconciles its own cell accounting against the feed can gate on it instead of
 #' re-deriving the outcome from the written files, which is not always possible.
 #'
-#' @param feeds The list returned by \code{\link{snapshot_frequencies}}.
+#' @param feeds The list returned by \code{\link{rt2s_frequencies}}.
 #' @return A data.table with one row per candidate cell and scenario:
 #'   \describe{
 #'     \item{\code{route_ref}, \code{direction_id}, \code{window},
@@ -1243,18 +1252,18 @@ resolved_grid <- function(cells, scen, ratios, built, dropped) {
 #'   drop and is deliberately not given a \code{drop_reason}.
 #' @examples
 #' \dontrun{
-#' feeds <- snapshot_frequencies(events, windows = win)
-#' grid <- snapshot_grid(feeds)
+#' feeds <- rt2s_frequencies(events, windows = win)
+#' grid <- rt2s_resolved_grid(feeds)
 #' # every candidate cell is accounted for, in every scenario
 #' table(grid$scenario, grid$drop_reason, useNA = "ifany")
 #' }
 #' @export
-snapshot_grid <- function(feeds) {
+rt2s_resolved_grid <- function(feeds) {
   grid <- attr(feeds, "resolved_grid", exact = TRUE)
   if (is.null(grid)) {
     stop(
       "'feeds' carries no resolved grid; it must be the list returned by ",
-      "snapshot_frequencies().",
+      "rt2s_frequencies().",
       call. = FALSE
     )
   }
@@ -1272,7 +1281,7 @@ render_pattern_observed <- function(tt, grp, travel_col) {
   data.table::setorder(tt, route_ref, direction_id, stop_sequence)
   pattern <- tt[,
     {
-      m <- monotone_offsets(get(travel_col), dwell_median)
+      m <- rt2s_monotone_offsets(get(travel_col), dwell_median)
       list(
         stop_ref = stop_ref,
         stop_sequence = stop_sequence,
@@ -1323,7 +1332,7 @@ render_pattern_baseline <- function(bp, grp, ratios, s) {
   scaled <- scaled[,
     {
       r <- ratio[1L]
-      m <- monotone_offsets(travel_base * r, dwell_base * r)
+      m <- rt2s_monotone_offsets(travel_base * r, dwell_base * r)
       list(
         stop_ref = stop_ref,
         stop_sequence = stop_sequence,

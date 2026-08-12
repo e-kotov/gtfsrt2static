@@ -12,4 +12,4 @@ config <- data.frame(
     url = paste0("file://", tempfile("does-not-exist")),
     interval_s = 0
   )
-summary <- rt_collect(config, dir = archive, max_polls = 2)
+summary <- rt2s_collect(config, dir = archive, max_polls = 2)

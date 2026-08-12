@@ -152,7 +152,7 @@ make_reference_passage_events <- function(
 }
 
 # Fixture PB: reference-stop passages whose source trip_ref is an all-day
-# block-style id. S1 passages still define headways even though obs_headways()
+# block-style id. S1 passages still define headways even though rt2s_obs_headways()
 # sees only one trip start.
 make_events_shared_trip_ref_passages <- function() {
   date <- "2026-07-14"
@@ -495,7 +495,7 @@ make_events_with_skipped <- function() {
 
 # Fixture NP: two "runs" whose only timed observation is a SKIPPED stop bearing
 # a stale timestamp. Unserved rows never count as trip starts, so no headway is
-# produced - snapshot_frequencies must reject the input (no usable headway)
+# produced - rt2s_frequencies must reject the input (no usable headway)
 # rather than treat the stale times as service.
 make_events_skipped_only_trips <- function() {
   mk <- function(tr, start) {
@@ -695,7 +695,7 @@ make_baseline_partial_times <- function() {
   b
 }
 
-#' Long per-cell ratio table for snapshot_frequencies(scaling=).
+#' Long per-cell ratio table for rt2s_frequencies(scaling=).
 #'
 #' Keyed the way the argument is: one row per (route, direction, window,
 #' scenario). `ratio` is recycled across the scenarios given.
@@ -718,7 +718,7 @@ make_scaling <- function(
 }
 
 # --- extra (individually-timed) trip fixtures --------------------------------
-# Shaped exactly as snapshot_frequencies(extra_trips=) takes them: trips plus
+# Shaped exactly as rt2s_frequencies(extra_trips=) takes them: trips plus
 # stop_times carrying ABSOLUTE clock times, and no frequencies row anywhere.
 
 #' Stops that make the extra-trip fixtures resolvable.

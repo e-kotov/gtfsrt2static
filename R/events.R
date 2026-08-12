@@ -11,7 +11,7 @@
 #'     known, a synthetic id for inferred trips. Never NA.}
 #'   \item{route_ref}{Route identity, NA when unknown.}
 #'   \item{shape_ref}{Shape identity linking the trip to \code{shapes.txt},
-#'     NA when unknown. Set by \code{snapshot_from_stop_times(shape_ref_prefix=)}
+#'     NA when unknown. Set by \code{rt2s_events_from_stop_times(shape_ref_prefix=)}
 #'     to match the ids produced by \code{gps2gtfs::g2g_shapes_from_trips()};
 #'     the assembler writes it to \code{trips.shape_id}.}
 #'   \item{direction_id}{GTFS direction (0/1), NA when unknown.}
@@ -50,7 +50,7 @@ event_provenance_levels <- c(
 )
 event_source_levels <- c("trip_updates", "positions", "gps")
 # Optional, additive C6 columns (nullable, only present when a producer emits
-# them). Recognised by validate_events and kept after the required block.
+# them). Recognised by rt2s_events_validate and kept after the required block.
 event_columns_optional <- c("pattern_ref")
 event_columns <- c(
   "trip_ref",
@@ -77,7 +77,7 @@ event_columns <- c(
 #' @return The validated events table as a keyed data.table (invisibly usable
 #'   in pipes); errors describe the first violation found.
 #' @export
-validate_events <- function(events) {
+rt2s_events_validate <- function(events) {
   dt <- data.table::as.data.table(events)
   validate_required_columns(dt, event_columns, "observed stop events")
 
@@ -181,7 +181,7 @@ validate_events <- function(events) {
 #'   (default) leaves \code{shape_ref} as NA (no shape linkage).
 #' @return A validated observed stop events data.table.
 #' @export
-snapshot_from_stop_times <- function(
+rt2s_events_from_stop_times <- function(
   stop_times,
   tz = "UTC",
   route_ref = NA_character_,
@@ -313,7 +313,7 @@ snapshot_from_stop_times <- function(
   out[, c("trip_key", "official_id") := NULL]
   data.table::setorderv(out, c("trip_ref", "arrival_time"))
   out[, stop_sequence := seq_len(.N), by = trip_ref]
-  validate_events(out)
+  rt2s_events_validate(out)
 }
 
 #' Fill Missing trip_id from the GTFS-RT TripDescriptor
@@ -393,7 +393,7 @@ synthesize_trip_id <- function(dt, prefix = "rtd_") {
 #'   updates against baseline scheduled times). Default "UTC".
 #' @return A validated observed stop events data.table.
 #' @export
-snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
+rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
   dt <- data.table::as.data.table(updates)
   validate_required_columns(dt, c("trip_id", "file_timestamp"), "updates")
 
@@ -615,5 +615,5 @@ snapshot_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") {
     )
   }
 
-  validate_events(out)
+  rt2s_events_validate(out)
 }

@@ -6,9 +6,9 @@ test_env <- simulate_test_env(package = "gtfsrt2static", path = "..")
 attach(test_env, warn.conflicts = FALSE)
 
 # test -------------------------------------------------------------------------
-events <- snapshot_from_trip_updates(make_updates())
+events <- rt2s_events_from_trip_updates(make_updates())
 expect_warning(
-    feed <- snapshot_assemble(events, baseline = make_baseline()),
+    feed <- rt2s_assemble(events, baseline = make_baseline()),
     NA
   )
 expect_identical(as.character(feed$trips$trip_id), "CS_1")

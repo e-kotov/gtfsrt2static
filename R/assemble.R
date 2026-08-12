@@ -1,9 +1,10 @@
 #' Scaffold a Standard-Compliant GTFS Feed from Observed Stop Events
 #'
 #' Baseline-free assembly: synthesizes every spec-required GTFS file from
-#' observed stop events plus user-supplied agency metadata, with
-#' deterministic, properly linked identifiers. Used by
-#' \code{\link{snapshot_assemble}} when no baseline feed is given.
+#' observed stop events plus user-supplied agency metadata, with deterministic,
+#' properly linked identifiers. Call it directly when there is no planned feed
+#' to inherit from at all; \code{\link{rt2s_assemble}} also falls back to it
+#' when it is given no \code{baseline}.
 #'
 #' What cannot come from GTFS-RT and must be supplied (or is filled with a
 #' flagged placeholder): agency name/url/timezone (spec-required), stop
@@ -23,7 +24,7 @@
 #' @param shapes Optional \code{shapes.txt}-shaped table (e.g. from
 #'   \code{gps2gtfs::g2g_shapes_from_trips()}). Linked to trips via
 #'   \code{trips.shape_id} when the events carry a matching \code{shape_ref}
-#'   (see \code{snapshot_from_stop_times(shape_ref_prefix=)}); shapes not
+#'   (see \code{rt2s_events_from_stop_times(shape_ref_prefix=)}); shapes not
 #'   referenced by any trip are dropped, and references without matching
 #'   geometry warn (or error under \code{strict}).
 #' @param tz Timezone of the service days; used to derive GTFS clock strings
@@ -43,7 +44,7 @@
 #' @return A gtfsio-convention feed object (class \code{gtfs}, named list of
 #'   data.tables) - write it with \code{gtfsio::export_gtfs()}.
 #' @export
-snapshot_scaffold <- function(
+rt2s_scaffold <- function(
   events,
   agency = NULL,
   stops = NULL,
@@ -55,7 +56,7 @@ snapshot_scaffold <- function(
   feed_contact_url = NULL,
   strict = FALSE
 ) {
-  events <- validate_events(events)
+  events <- rt2s_events_validate(events)
 
   # Publish blockers: conditions that make the feed non-spec-compliant. They
   # are recorded on the returned object (attr "publishable" / "publish_blockers")
@@ -170,7 +171,7 @@ snapshot_scaffold <- function(
       emit(
         "'shapes' supplied but events carry no shape_ref, so shapes cannot ",
         "be linked to trips (pass shape_ref_prefix= to ",
-        "snapshot_from_stop_times()). Shapes are dropped.",
+        "rt2s_events_from_stop_times()). Shapes are dropped.",
         if (isTRUE(strict)) " (strict mode)" else ""
       )
     }
@@ -226,7 +227,7 @@ snapshot_scaffold <- function(
 #'
 #' Stamps \code{publishable} (logical) and \code{publish_blockers} (character
 #' vector of reasons) attributes on a feed object. Read them with
-#' \code{\link{snapshot_publishable}}.
+#' \code{\link{rt2s_publishable}}.
 #' @noRd
 stamp_publishable <- function(feed, blockers) {
   attr(feed, "publishable") <- length(blockers) == 0L
@@ -335,15 +336,15 @@ build_stops_table <- function(stop_ids, stops, emit, strict) {
   stops_out
 }
 
-#' Is an Assembled Feed Ready to Publish?
+#' Publish-Readiness of an Assembled Feed
 #'
-#' Reports whether \code{\link{snapshot_scaffold}} / \code{\link{snapshot_assemble}}
+#' Reports whether \code{\link{rt2s_scaffold}} / \code{\link{rt2s_assemble}}
 #' produced a spec-compliant feed, and if not, why. This is the programmatic
 #' counterpart to the assembly warnings: a publish/export step can gate on it
 #' instead of relying on a human noticing a warning.
 #'
-#' @param feed A feed object returned by \code{snapshot_scaffold()} or
-#'   \code{snapshot_assemble()}.
+#' @param feed A feed object returned by \code{rt2s_scaffold()} or
+#'   \code{rt2s_assemble()}.
 #' @return A list with \code{publishable} (logical) and \code{blockers}
 #'   (character vector; empty when publishable). A feed with blockers is still
 #'   a valid R object for inspection/analysis - it just should not be published
@@ -351,12 +352,12 @@ build_stops_table <- function(stop_ids, stops, emit, strict) {
 #'   \code{strict = TRUE}, which refuses to produce one).
 #' @examples
 #' \dontrun{
-#' feed <- snapshot_scaffold(events)
-#' status <- snapshot_publishable(feed)
+#' feed <- rt2s_scaffold(events)
+#' status <- rt2s_publishable(feed)
 #' if (!status$publishable) stop(paste(status$blockers, collapse = "; "))
 #' }
 #' @export
-snapshot_publishable <- function(feed) {
+rt2s_publishable <- function(feed) {
   pub <- attr(feed, "publishable")
   blk <- attr(feed, "publish_blockers")
   list(
@@ -367,13 +368,18 @@ snapshot_publishable <- function(feed) {
 
 #' Assemble a Realized GTFS Feed from Observed Stop Events
 #'
-#' The main entry point of the assembly module. With a \code{baseline}
-#' (planned) feed, the realized feed inherits agency, routes, stops, and
-#' shapes wholesale, keeps official trip identifiers, and replaces
-#' \code{stop_times.txt} with the observed times of the trips that actually
-#' ran on \code{service_date} - so planned-vs-realized joins are direct.
-#' Without a baseline, a compliant feed is scaffolded from scratch via
-#' \code{\link{snapshot_scaffold}}.
+#' Turns observed stop events into one static GTFS feed describing the service
+#' that actually operated. With a \code{baseline} (planned) feed, the realized
+#' feed inherits agency, routes, stops, and shapes wholesale, keeps official
+#' trip identifiers, and replaces \code{stop_times.txt} with the observed times
+#' of the trips that actually ran on \code{service_date} - so
+#' planned-vs-realized joins are direct. Without a baseline, a compliant feed is
+#' scaffolded from scratch via \code{\link{rt2s_scaffold}}.
+#'
+#' This is the entry point to use when each observed run should stay its own
+#' trip. To collapse many runs into one representative trip per time window with
+#' a \code{frequencies.txt} headway instead, use
+#' \code{\link{rt2s_frequencies}}.
 #'
 #' @param events Observed stop events (see \link{observed-stop-events}).
 #' @param baseline Optional planned static GTFS feed: a gtfsio/gtfstools-style
@@ -388,12 +394,12 @@ snapshot_publishable <- function(feed) {
 #' @param feed_contact_email,feed_contact_url Optional recommended
 #'   \code{feed_info.txt} contact fields, written only when supplied.
 #' @param ... In scaffold mode (no baseline), passed to
-#'   \code{\link{snapshot_scaffold}} (\code{agency}, \code{stops},
+#'   \code{\link{rt2s_scaffold}} (\code{agency}, \code{stops},
 #'   \code{route_type}, \code{shapes}, \code{strict}).
 #' @return A gtfsio-convention feed object (class \code{gtfs}); write it with
 #'   \code{gtfsio::export_gtfs()}.
 #' @export
-snapshot_assemble <- function(
+rt2s_assemble <- function(
   events,
   baseline = NULL,
   service_date = NULL,
@@ -403,13 +409,13 @@ snapshot_assemble <- function(
   feed_contact_url = NULL,
   ...
 ) {
-  events <- validate_events(events)
+  events <- rt2s_events_validate(events)
 
   if (is.null(baseline)) {
     if (!is.null(service_date)) {
       events <- events[events$service_date == as.Date(service_date)]
     }
-    return(snapshot_scaffold(
+    return(rt2s_scaffold(
       events,
       tz = tz,
       feed_lang = feed_lang,

@@ -350,9 +350,12 @@ compute_stop_order <- function(dt_off) {
 
 #' Classify Times of Day into Named Service Windows
 #'
-#' Assigns each time to a named window (e.g. "am_peak"). Used by
-#' \code{\link{obs_headways}} to group trips, and stand-alone for any
-#' time-of-day bucketing of observed service.
+#' Assigns each time to a named window (e.g. "am_peak"), returning one window
+#' name per input time. Use it for any time-of-day bucketing of observed
+#' service; it is also the function that gives \code{windows=} its meaning
+#' throughout the package, so a window definition that behaves as you expect
+#' here behaves the same way in \code{\link{rt2s_obs_headways}} and
+#' \code{\link{rt2s_frequencies}}.
 #'
 #' @param x A \code{POSIXct} vector (its own timezone is respected) or integer
 #'   seconds since midnight.
@@ -375,18 +378,18 @@ compute_stop_order <- function(dt_off) {
 #'   \code{"other"} for a time matching no window (never produced when
 #'   \code{windows} is \code{NULL}), and \code{NA} where \code{x} is \code{NA}.
 #' @examples
-#' time_window(
+#' rt2s_time_window(
 #'   as.POSIXct(c("2026-07-14 07:30:00", "2026-07-14 12:00:00"), tz = "UTC"),
 #'   list(am_peak = c("06:00", "09:00"))
 #' )
 #' # Overnight service attributed to the previous service date:
-#' time_window(
+#' rt2s_time_window(
 #'   as.POSIXct("2026-07-15 00:30:00", tz = "UTC"),
 #'   list(overnight = c("22:00", "26:00")),
 #'   service_date = as.Date("2026-07-14")
 #' )
 #' @export
-time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) {
+rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) {
   secs <- time_of_day_secs(x, service_date = service_date, tz = tz)
   if (is.null(windows)) {
     out <- rep("all", length(secs))
@@ -435,7 +438,7 @@ time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) {
 #' what was observed, so different observations can yield different stop sets,
 #' and a scheduled-versus-observed contrast then confounds "service changed"
 #' with "the network changed". For that design, \strong{anchor} on the published
-#' pattern with \code{\link{baseline_patterns}} and vary only service levels.
+#' pattern with \code{\link{rt2s_baseline_patterns}} and vary only service levels.
 #'
 #' Worth knowing how easily the two are confused: the median-offset rule below
 #' is the same rule a GPS-only pattern builder would use, so a pipeline can slide
@@ -452,44 +455,147 @@ time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) {
 #'   more than once within a single trip (loop/branch service) triggers a
 #'   warning, since the median collapses the repeated visits into one position.
 #' @export
-obs_stop_order <- function(events) {
-  dt <- add_trip_offsets(validate_events(events))
+rt2s_obs_stop_order <- function(events) {
+  dt <- add_trip_offsets(rt2s_events_validate(events))
   compute_stop_order(dt)
 }
 
 #' Observed Headways per Route-Direction and Time Window
 #'
-#' Reduces observed trip start times to headway quantiles per
-#' \code{(route_ref, direction_id, window)}. A trip's start is its first
-#' \strong{served} arrival: \code{skipped}/\code{canceled} rows are ignored, so
-#' a canceled trip (which never operated) contributes no start and cannot shrink
-#' the observed headway, even if its rows carry stale timestamps. Headways are
-#' the gaps between consecutive trip starts \emph{within one service date}.
-#' Non-positive gaps and gaps longer than \code{max_headway_secs} are dropped as
-#' spurious (vehicles resuming after a layover, data gaps). No weekday/weekend
-#' filtering is applied - restrict the \code{events} to the service dates you
-#' want summarised before calling.
+#' Reduces observed service to headway quantiles per \code{(route_ref,
+#' direction_id, window)}. Two kinds of evidence can carry a headway, and
+#' \code{method} picks between them; both drop non-positive gaps and gaps longer
+#' than \code{max_headway_secs} as spurious (vehicles resuming after a layover,
+#' data gaps), and neither applies weekday/weekend filtering - restrict the
+#' \code{events} to the service dates you want summarised before calling.
 #'
-#' @param events Observed stop events (see \link{observed-stop-events}).
-#' @param windows Time-window definition passed to \code{\link{time_window}};
+#' \code{method = "trip_start"} (default) measures the gaps between consecutive
+#' \strong{trip starts} \emph{within one service date}. A trip's start is its
+#' first \strong{served} arrival: \code{skipped}/\code{canceled} rows are
+#' ignored, so a canceled trip (which never operated) contributes no start and
+#' cannot shrink the observed headway, even if its rows carry stale timestamps.
+#'
+#' @section Passage headways:
+#' \code{method = "passage"} instead measures the intervals between successive
+#' vehicle passages at one reference stop per route-direction. This is what to
+#' use when \code{trip_ref} cannot identify individual trips (for example, an
+#' all-day block identifier): \code{"trip_start"} would see one trip start,
+#' but a reference-stop passage sequence can still reveal the service headway.
+#'
+#' The reference stop must identify a single direction within its route. A stop
+#' observed in multiple known directions is rejected when supplied explicitly,
+#' and is excluded from automatic selection. Rows with unknown
+#' \code{direction_id} do not make a stop shared, but they are warned and
+#' excluded from passage-headway output because they cannot be assigned to a
+#' route-direction group. If every candidate reference-stop row lacks
+#' \code{direction_id}, the function errors after this exclusion; a caller who
+#' knows a stop is one-directional should stamp \code{direction_id} on their
+#' events before calling. Automatic selection chooses the best-observed
+#' direction-unique stop for each route-direction.
+#'
+#' Consecutive detections of the same vehicle at the same reference stop are
+#' collapsed into one passage until the vehicle has been absent for at least
+#' \code{min_revisit_gap_s}. A chain of detections each spaced below
+#' \code{min_revisit_gap_s} remains one passage even if the chain's total span
+#' is longer. This keeps a dwell or repeated GPS fix from becoming many
+#' artificial headways.
+#'
+#' @param events Observed stop events (see \link{observed-stop-events}). For
+#'   \code{method = "passage"}, GPS observations should first be converted with
+#'   \code{\link{rt2s_events_from_stop_times}}, so they use the same provenance
+#'   and source conventions as the rest of the package.
+#'   \code{\link{rt2s_events_from_trip_updates}} keeps one row per trip, service
+#'   date, and stop, so it exposes at most one passage per stop per trip and
+#'   cannot recover repeated visits that were already reduced.
+#' @param windows Time-window definition passed to \code{\link{rt2s_time_window}};
 #'   \code{NULL} (default) treats each day as one \code{"all"} window.
 #' @param quantiles Named numeric vector of probabilities in \code{[0, 1]};
 #'   each becomes an integer-seconds column \code{headway_<name>}. Default
 #'   \code{c(median = 0.5, p95 = 0.95)}.
 #' @param max_headway_secs Upper cutoff; gaps above it are treated as
 #'   between-service breaks and excluded. Default 10800 (3 h).
+#' @param method Which evidence carries the headway: \code{"trip_start"}
+#'   (default) or \code{"passage"}, as described above.
+#' @param reference_stops Passage method only. Optional character vector of stop
+#'   ids to consider as reference stops. If \code{NULL}, the best-observed
+#'   direction-unique stop is selected for each route-direction. If multiple
+#'   supplied stops match a route-direction, the best-observed one is used.
+#'   Supplying \code{reference_stops} restricts output to route-directions that
+#'   serve one of those stops. Explicit values are ignored with a warning under
+#'   \code{method = "trip_start"}.
+#' @param min_revisit_gap_s Passage method only. Minimum seconds between two
+#'   passages of the same vehicle at the same reference stop. Detections closer
+#'   together are treated as one passage. If \code{vehicle_ref} is missing, dwell
+#'   revisits cannot be distinguished from following vehicles, so each
+#'   unknown-vehicle detection is treated as a separate passage and this gap does
+#'   not apply to it. Default 600 (10 min). Explicit values are ignored with a
+#'   warning under \code{method = "trip_start"}.
 #' @return A data.table with columns \code{route_ref}, \code{direction_id},
 #'   \code{window}, one \code{headway_<name>} column per quantile (integer
 #'   seconds), and \code{n_headways} (count of headways summarised). Groups with
 #'   no usable headway (e.g. a single run) produce no row.
+#'
+#'   \code{method = "passage"} additionally carries
+#'   \code{reference_stop_ref}, the stop the passages were measured at. The
+#'   headway columns and \code{n_headways} are identical across the two methods,
+#'   so either result can feed the frequency assembly path. If served events
+#'   exist but no direction-unique reference stop can be resolved, the passage
+#'   method errors instead of returning an empty table.
 #' @export
-obs_headways <- function(
+rt2s_obs_headways <- function(
+  events,
+  windows = NULL,
+  quantiles = c(median = 0.5, p95 = 0.95),
+  max_headway_secs = 3L * 3600L,
+  method = c("trip_start", "passage"),
+  reference_stops = NULL,
+  min_revisit_gap_s = 600L
+) {
+  method <- match.arg(method)
+  if (identical(method, "trip_start")) {
+    # An argument that cannot apply warns rather than being silently dropped;
+    # missing() is what distinguishes "explicitly passed" from "left at default".
+    ignored <- character()
+    if (!missing(reference_stops)) {
+      ignored <- c(ignored, "reference_stops")
+    }
+    if (!missing(min_revisit_gap_s)) {
+      ignored <- c(ignored, "min_revisit_gap_s")
+    }
+    if (length(ignored) > 0L) {
+      warning(
+        "'",
+        paste(ignored, collapse = "', '"),
+        "' ignored when method = \"trip_start\".",
+        call. = FALSE
+      )
+    }
+    return(headways_by_trip_start(
+      events,
+      windows = windows,
+      quantiles = quantiles,
+      max_headway_secs = max_headway_secs
+    ))
+  }
+  headways_by_passage(
+    events,
+    reference_stops = reference_stops,
+    windows = windows,
+    quantiles = quantiles,
+    min_revisit_gap_s = min_revisit_gap_s,
+    max_headway_secs = max_headway_secs
+  )
+}
+
+#' Headways between consecutive trip starts (method = "trip_start")
+#' @noRd
+headways_by_trip_start <- function(
   events,
   windows = NULL,
   quantiles = c(median = 0.5, p95 = 0.95),
   max_headway_secs = 3L * 3600L
 ) {
-  dt <- validate_events(events)
+  dt <- rt2s_events_validate(events)
   check_quantiles(quantiles)
   max_headway_secs <- check_positive_seconds(
     max_headway_secs,
@@ -518,7 +624,7 @@ obs_headways <- function(
     headway_secs := NA_real_
   ]
   trips[,
-    window := time_window(trip_start, windows, service_date = service_date, tz = tz)
+    window := rt2s_time_window(trip_start, windows, service_date = service_date, tz = tz)
   ]
 
   qn <- names(quantiles)
@@ -537,68 +643,14 @@ obs_headways <- function(
   summ[]
 }
 
-#' Observed Headways from Successive Reference-Stop Passages
+#' Headways between successive reference-stop passages (method = "passage")
 #'
-#' Measures headways as intervals between successive vehicle passages at one
-#' reference stop per route-direction. This is useful when \code{trip_ref}
-#' cannot identify individual trips (for example, an all-day block identifier):
-#' \code{\link{obs_headways}} would see one trip start, but a reference-stop
-#' passage sequence can still reveal the service headway.
-#'
-#' The reference stop must identify a single direction within its route. A stop
-#' observed in multiple known directions is rejected when supplied explicitly,
-#' and is excluded from automatic selection. Rows with unknown
-#' \code{direction_id} do not make a stop shared, but they are warned and
-#' excluded from passage-headway output because they cannot be assigned to a
-#' route-direction group. If every candidate reference-stop row lacks
-#' \code{direction_id}, the function errors after this exclusion; a caller who
-#' knows a stop is one-directional should stamp \code{direction_id} on their
-#' events before calling. Automatic selection chooses the best-observed
-#' direction-unique stop for each route-direction.
-#'
-#' Consecutive detections of the same vehicle at the same reference stop are
-#' collapsed into one passage until the vehicle has been absent for at least
-#' \code{min_revisit_gap_s}. A chain of detections each spaced below
-#' \code{min_revisit_gap_s} remains one passage even if the chain's total span
-#' is longer. This keeps a dwell or repeated GPS fix from becoming many
-#' artificial headways.
-#'
-#' @param events Observed stop events (see \link{observed-stop-events}). GPS
-#'   observations should first be converted with
-#'   \code{\link{snapshot_from_stop_times}}, so they use the same provenance and
-#'   source conventions as the rest of the package.
-#'   \code{\link{snapshot_from_trip_updates}} keeps one row per trip, service
-#'   date, and stop, so it exposes at most one passage per stop per trip and
-#'   cannot recover repeated visits that were already reduced.
-#' @param reference_stops Optional character vector of stop ids to consider as
-#'   reference stops. If \code{NULL}, the best-observed direction-unique stop is
-#'   selected for each route-direction. If multiple supplied stops match a
-#'   route-direction, the best-observed one is used. Supplying
-#'   \code{reference_stops} restricts output to route-directions that serve one
-#'   of those stops.
-#' @param windows Time-window definition passed to \code{\link{time_window}};
-#'   \code{NULL} (default) treats each day as one \code{"all"} window.
-#' @param quantiles Named numeric vector of probabilities in \code{[0, 1]};
-#'   each becomes an integer-seconds column \code{headway_<name>}. Default
-#'   \code{c(median = 0.5, p95 = 0.95)}.
-#' @param min_revisit_gap_s Minimum seconds between two passages of the same
-#'   vehicle at the same reference stop. Detections closer together are treated
-#'   as one passage. If \code{vehicle_ref} is missing, dwell revisits cannot be
-#'   distinguished from following vehicles, so each unknown-vehicle detection is
-#'   treated as a separate passage and this gap does not apply to it. Default
-#'   600 (10 min).
-#' @param max_headway_secs Upper cutoff; gaps above it are treated as
-#'   between-service breaks and excluded. Default 10800 (3 h).
-#' @return A data.table with columns \code{route_ref}, \code{direction_id},
-#'   \code{window}, \code{reference_stop_ref}, one \code{headway_<name>} column
-#'   per quantile (integer seconds), and \code{n_headways} (count of headways
-#'   summarised). The headway columns and \code{n_headways} match
-#'   \code{\link{obs_headways}}, so the result can feed the frequency assembly
-#'   path. Groups with no usable headway produce no row. If served events exist
-#'   but no direction-unique reference stop can be resolved, the function errors
-#'   instead of returning an empty table.
-#' @export
-obs_headways_by_passage <- function(
+#' The reference stop must identify a single direction within its route, and
+#' consecutive detections of the same vehicle are collapsed until it has been
+#' absent for `min_revisit_gap_s`. The public contract lives on
+#' [rt2s_obs_headways()].
+#' @noRd
+headways_by_passage <- function(
   events,
   reference_stops = NULL,
   windows = NULL,
@@ -606,7 +658,7 @@ obs_headways_by_passage <- function(
   min_revisit_gap_s = 600L,
   max_headway_secs = 3L * 3600L
 ) {
-  dt <- validate_events(events)
+  dt <- rt2s_events_validate(events)
   check_quantiles(quantiles)
   min_revisit_gap_s <- check_positive_seconds(
     min_revisit_gap_s,
@@ -714,7 +766,7 @@ obs_headways_by_passage <- function(
     headway_secs := NA_real_
   ]
   passages[,
-    window := time_window(
+    window := rt2s_time_window(
       passage_time,
       windows,
       service_date = service_date,
@@ -944,7 +996,7 @@ resolve_reference_stops <- function(served, reference_stops = NULL) {
 #' Reduces many observed passages to one representative stop pattern: per
 #' \code{(route_ref, direction_id, stop_ref)}, quantiles of travel time from
 #' trip start and the median dwell. The stops are ordered by the cross-trip
-#' canonical order (\code{\link{obs_stop_order}}), giving a monotone
+#' canonical order (\code{\link{rt2s_obs_stop_order}}), giving a monotone
 #' representative sequence suitable for a frequency trip's \code{stop_times}.
 #'
 #' @param events Observed stop events (see \link{observed-stop-events}).
@@ -963,11 +1015,11 @@ resolve_reference_stops <- function(served, reference_stops = NULL) {
 #'   monotone here; the assembler applies the \code{cummax} guard when it
 #'   renders clock times.
 #' @export
-obs_travel_times <- function(
+rt2s_obs_travel_times <- function(
   events,
   quantiles = c(p05 = 0.05, p50 = 0.5, p95 = 0.95)
 ) {
-  dt <- add_trip_offsets(validate_events(events))
+  dt <- add_trip_offsets(rt2s_events_validate(events))
   check_quantiles(quantiles)
   dt[, dwell := as.numeric(departure_time - arrival_time, units = "secs")]
 

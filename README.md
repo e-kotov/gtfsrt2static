@@ -9,11 +9,11 @@ ready for comparison against the planned schedule.
 ## How it fits together
 
 ```
-live endpoints ──rt_collect()──► daily .pb ZIPs
+live endpoints ──rt2s_collect()──► daily .pb ZIPs
                                      │
-      Trip Updates ──(gtfsrealtime)──┴──► snapshot_from_trip_updates() ──┐
-                                                                         ├─► observed stop events ─► snapshot_assemble() ─► realized GTFS zip
-      Vehicle Positions / raw GPS ──(gps2gtfs)─► snapshot_from_stop_times() ─┘        (baseline feed optional)
+      Trip Updates ──(gtfsrealtime)──┴──► rt2s_events_from_trip_updates() ──┐
+                                                                         ├─► observed stop events ─► rt2s_assemble() ─► realized GTFS zip
+      Vehicle Positions / raw GPS ──(gps2gtfs)─► rt2s_events_from_stop_times() ─┘        (baseline feed optional)
 ```
 
 - [`gtfsrealtime`](https://cran.r-project.org/package=gtfsrealtime) parses
@@ -28,11 +28,11 @@ live endpoints ──rt_collect()──► daily .pb ZIPs
 
 | Module | Functions | Job |
 |---|---|---|
-| collect | `rt_collect()`, `rt_rotate()`, `rt_coverage()`, `rt_service_template()` | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
-| events | `snapshot_from_trip_updates()`, `snapshot_from_stop_times()`, `validate_events()` | reduce observations to one row per trip × stop × service date, with provenance |
-| summarise | `obs_headways()`, `obs_headways_by_passage()`, `obs_travel_times()`, `obs_stop_order()`, `time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
-| baseline | `baseline_patterns()`, `baseline_headways()` | reduce a *planned* static feed to one canonical stop pattern per route-direction, and to its own scheduled headways |
-| assemble | `snapshot_assemble()`, `snapshot_scaffold()`, `snapshot_frequencies()`, `snapshot_grid()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed — and read back which cells were emitted, with what, and why the rest were dropped |
+| collect | `rt2s_collect()`, `rt2s_archive_rotate()`, `rt2s_archive_coverage()`, `rt2s_service_template()` | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
+| events | `rt2s_events_from_trip_updates()`, `rt2s_events_from_stop_times()`, `rt2s_events_validate()` | reduce observations to one row per trip × stop × service date, with provenance |
+| summarise | `rt2s_obs_headways()`, `rt2s_obs_travel_times()`, `rt2s_obs_stop_order()`, `rt2s_time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
+| baseline | `rt2s_baseline_patterns()`, `rt2s_baseline_headways()` | reduce a *planned* static feed to one canonical stop pattern per route-direction, and to its own scheduled headways |
+| assemble | `rt2s_assemble()`, `rt2s_scaffold()`, `rt2s_frequencies()`, `rt2s_resolved_grid()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed — and read back which cells were emitted, with what, and why the rest were dropped |
 
 ## Quick example
 
@@ -41,22 +41,22 @@ library(gtfsrt2static)
 
 # Trip Updates archive -> realized feed for one day
 updates <- gtfsrealtime::read_gtfsrt_trip_updates("tu/20260714.zip", "America/New_York")
-events  <- snapshot_from_trip_updates(updates)
-feed    <- snapshot_assemble(events, baseline = "planned_gtfs.zip")
+events  <- rt2s_events_from_trip_updates(updates)
+feed    <- rt2s_assemble(events, baseline = "planned_gtfs.zip")
 gtfsio::export_gtfs(feed, "realized_20260714.zip")
 
 # Vehicle Positions (no Trip Updates, no baseline)
 positions <- gtfsrealtime::read_gtfsrt_positions("vp/20260714.zip", "America/New_York")
 result <- gps2gtfs::g2g_extract_trips_and_stop_times(positions, terminals, stops, ...)
-events <- snapshot_from_stop_times(result$stop_times)
-feed   <- snapshot_assemble(
+events <- rt2s_events_from_stop_times(result$stop_times)
+feed   <- rt2s_assemble(
   events,
   agency = list(name = "My Agency", url = "https://...", timezone = "America/New_York"),
   stops  = gps2gtfs::g2g_stops_from_positions(positions)
 )
 
 # Collapse many runs into a frequency-based feed at three reliability quantiles
-feeds <- snapshot_frequencies(
+feeds <- rt2s_frequencies(
   events,
   windows = list(am_peak = c("06:00", "09:00"), midday = c("09:00", "16:00")),
   stops   = stops_with_coords,
@@ -65,7 +65,7 @@ feeds <- snapshot_frequencies(
 feeds$structural; feeds$median; feeds$reliable   # p05 / p50 / p95 feeds
 
 # If trip_ref is not per-run, estimate headways from reference-stop passages
-feeds <- snapshot_frequencies(
+feeds <- rt2s_frequencies(
   events,
   windows = list(am_peak = c("06:00", "09:00"), midday = c("09:00", "16:00")),
   stops   = stops_with_coords,
@@ -75,7 +75,9 @@ feeds <- snapshot_frequencies(
 ```
 
 Supplying `reference_stops` restricts passage-headway output to
-route-directions that serve one of those stops.
+route-directions that serve one of those stops. The same choice is available
+one level down as `rt2s_obs_headways(method = "passage")`, which is where
+`reference_stops` and `min_revisit_gap_s` are documented.
 
 ### Anchoring on a planned feed
 
@@ -87,10 +89,10 @@ scheduled-versus-observed contrast measures service rather than network
 differences.
 
 ```r
-sched <- baseline_headways(static, windows = windows)
+sched <- rt2s_baseline_headways(static, windows = windows)
 sched$scenario <- "scheduled"
 
-feeds <- snapshot_frequencies(
+feeds <- rt2s_frequencies(
   events,
   windows = windows,
   quantiles = list(
@@ -120,7 +122,7 @@ repeating headway is carried as an ordinary timed trip. `extra_trips=` takes
 those, keyed by scenario, with absolute clock times and no `frequencies.txt` row:
 
 ```r
-feeds <- snapshot_frequencies(
+feeds <- rt2s_frequencies(
   events,
   windows = windows,
   stops   = stops_with_coords,
@@ -130,7 +132,7 @@ feeds <- snapshot_frequencies(
 
 A scenario may supply more, fewer or no extra trips than another: exact-time
 evidence legitimately differs by scenario, so no cross-scenario invariant is
-imposed on them. They are not rows of `snapshot_grid()` — the grid is one row per
+imposed on them. They are not rows of `rt2s_resolved_grid()` — the grid is one row per
 candidate cell — so reconcile `trips.txt` against the emitted cells plus the ids
 you supplied.
 

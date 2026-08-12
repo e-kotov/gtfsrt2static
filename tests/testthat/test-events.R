@@ -1,5 +1,5 @@
-test_that("snapshot_from_stop_times converts gps2gtfs output to events", {
-  events <- snapshot_from_stop_times(make_g2g_stop_times(), route_ref = "B62")
+test_that("rt2s_events_from_stop_times converts gps2gtfs output to events", {
+  events <- rt2s_events_from_stop_times(make_g2g_stop_times(), route_ref = "B62")
 
   expect_identical(nrow(events), 4L)
   expect_identical(unique(events$provenance), "observed")
@@ -17,8 +17,8 @@ test_that("snapshot_from_stop_times converts gps2gtfs output to events", {
   )
 })
 
-test_that("snapshot_from_trip_updates reduces polls and labels provenance", {
-  events <- snapshot_from_trip_updates(make_updates())
+test_that("rt2s_events_from_trip_updates reduces polls and labels provenance", {
+  events <- rt2s_events_from_trip_updates(make_updates())
 
   s1 <- events[stop_ref == "S1"]
   expect_identical(nrow(s1), 1L) # two polls reduced to one
@@ -44,36 +44,36 @@ test_that("delay-only updates require a baseline and resolve against it", {
   delay_only$arrival_delay <- 90
 
   expect_error(
-    snapshot_from_trip_updates(delay_only),
+    rt2s_events_from_trip_updates(delay_only),
     "requires the baseline feed's scheduled times"
   )
 
-  events <- snapshot_from_trip_updates(delay_only, baseline = make_baseline())
+  events <- rt2s_events_from_trip_updates(delay_only, baseline = make_baseline())
   # scheduled 06:31:30 + 90 s delay
   expect_identical(format(events$arrival_time, "%H:%M:%S"), "06:33:00")
 })
 
-test_that("validate_events catches schema violations", {
-  good <- snapshot_from_stop_times(make_g2g_stop_times())
-  expect_silent(validate_events(good))
+test_that("rt2s_events_validate catches schema violations", {
+  good <- rt2s_events_from_stop_times(make_g2g_stop_times())
+  expect_silent(rt2s_events_validate(good))
 
   bad_prov <- data.table::copy(good)[1, provenance := "guessed"]
-  expect_error(validate_events(bad_prov), "Unknown 'provenance'")
+  expect_error(rt2s_events_validate(bad_prov), "Unknown 'provenance'")
 
   bad_date <- data.table::copy(good)
   bad_date[, service_date := as.character(service_date)]
-  expect_error(validate_events(bad_date), "must be a Date")
+  expect_error(rt2s_events_validate(bad_date), "must be a Date")
 
   bad_order <- data.table::copy(good)
   bad_order[1, departure_time := arrival_time - 60]
-  expect_error(validate_events(bad_order), "must not precede")
+  expect_error(rt2s_events_validate(bad_order), "must not precede")
 
   expect_error(
-    validate_events(good[, !"trip_ref"]),
+    rt2s_events_validate(good[, !"trip_ref"]),
     "Missing required columns"
   )
 })
-test_that("snapshot_from_stop_times accepts POSIXct times, no date column", {
+test_that("rt2s_events_from_stop_times accepts POSIXct times, no date column", {
   tz <- "Asia/Colombo"
   st <- data.frame(
     trip_id = c(7L, 7L, 8L, 8L),
@@ -96,7 +96,7 @@ test_that("snapshot_from_stop_times accepts POSIXct times, no date column", {
     )
   )
 
-  events <- snapshot_from_stop_times(st)
+  events <- rt2s_events_from_stop_times(st)
 
   # The overnight trip keeps one trip_ref on the day it started; its
   # post-midnight stop does not drift to the next service date.
@@ -119,7 +119,7 @@ test_that("legacy clock strings repair a stop visit spanning midnight", {
   st$arrival_time <- "23:59:30"
   st$departure_time <- "00:00:20" # wrapped behind the arrival
 
-  events <- snapshot_from_stop_times(st)
+  events <- rt2s_events_from_stop_times(st)
 
   expect_identical(
     as.numeric(events$departure_time - events$arrival_time, units = "secs"),
@@ -131,14 +131,14 @@ test_that("mixed POSIXct/character stop times are rejected", {
   st <- make_g2g_stop_times()
   st$arrival_time <- as.POSIXct(paste(st$date, st$arrival_time), tz = "UTC")
 
-  expect_error(snapshot_from_stop_times(st), "both be POSIXct")
+  expect_error(rt2s_events_from_stop_times(st), "both be POSIXct")
 })
 
 test_that("provided_trip_id becomes the verbatim trip_ref", {
   st <- make_g2g_stop_times()
   st$provided_trip_id <- c("CS_1", "CS_1", "CS_2", "CS_2")
 
-  events <- snapshot_from_stop_times(st, route_ref = "B62")
+  events <- rt2s_events_from_stop_times(st, route_ref = "B62")
 
   # Official ids used verbatim (no g2g_ prefix) so baseline matching works
   expect_setequal(unique(events$trip_ref), c("CS_1", "CS_2"))
@@ -149,7 +149,7 @@ test_that("missing provided_trip_id falls back to a synthetic ref per trip", {
   st <- make_g2g_stop_times()
   st$provided_trip_id <- c("CS_1", "CS_1", NA, NA)
 
-  events <- snapshot_from_stop_times(st)
+  events <- rt2s_events_from_stop_times(st)
 
   expect_true("CS_1" %in% events$trip_ref)
   # trip 2 (no official id) gets a date-qualified synthetic ref
@@ -186,7 +186,7 @@ test_that("trip updates without trip_id are identified by the TripDescriptor", {
     stringsAsFactors = FALSE
   )
 
-  events <- snapshot_from_trip_updates(updates)
+  events <- rt2s_events_from_trip_updates(updates)
 
   # Two trips recovered (not collapsed into one NA-trip_id blob)
   expect_identical(data.table::uniqueN(events$trip_ref), 2L)
@@ -210,7 +210,7 @@ test_that("rows with neither trip_id nor descriptor warn", {
     stringsAsFactors = FALSE
   )
   expect_warning(
-    suppressMessages(try(snapshot_from_trip_updates(bad), silent = TRUE)),
+    suppressMessages(try(rt2s_events_from_trip_updates(bad), silent = TRUE)),
     "cannot be recovered"
   )
 })
@@ -239,12 +239,12 @@ test_that("stop_ref falls back to seq_<n> when only stop_sequence is present", {
     stringsAsFactors = FALSE
   )
   expect_message(
-    ev <- snapshot_from_trip_updates(upd),
+    ev <- rt2s_events_from_trip_updates(upd),
     "neither stop_id nor stop_sequence"
   )
   # real stop_ids kept; sequence-only row synthesized; empty row dropped
   expect_identical(sort(ev$stop_ref), c("S1", "S2", "seq_3"))
   expect_false(anyNA(ev$stop_ref))
   expect_identical(ev[stop_ref == "seq_3", stop_sequence], 3L)
-  expect_s3_class(validate_events(ev), "data.table")
+  expect_s3_class(rt2s_events_validate(ev), "data.table")
 })

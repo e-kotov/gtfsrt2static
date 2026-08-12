@@ -1,4 +1,4 @@
-test_that("rt_collect stores changed responses and skips unchanged ones", {
+test_that("rt2s_collect stores changed responses and skips unchanged ones", {
   src <- tempfile(fileext = ".pb")
   writeBin(as.raw(1:64), src)
   archive <- tempfile("archive")
@@ -9,7 +9,7 @@ test_that("rt_collect stores changed responses and skips unchanged ones", {
     interval_s = 0
   )
 
-  summary <- rt_collect(config, dir = archive, max_polls = 3)
+  summary <- rt2s_collect(config, dir = archive, max_polls = 3)
 
   expect_identical(summary$polls, 3L)
   expect_identical(summary$stored, 1L) # identical bytes on polls 2-3
@@ -28,19 +28,19 @@ test_that("rt_collect stores changed responses and skips unchanged ones", {
   expect_identical(sum(manifest$stored), 1L)
 })
 
-test_that("rt_collect logs errors for unreachable feeds", {
+test_that("rt2s_collect logs errors for unreachable feeds", {
   archive <- tempfile("archive")
   config <- data.frame(
     feed_id = "broken",
     url = paste0("file://", tempfile("does-not-exist")),
     interval_s = 0
   )
-  summary <- rt_collect(config, dir = archive, max_polls = 2)
+  summary <- rt2s_collect(config, dir = archive, max_polls = 2)
   expect_identical(summary$errors, 2L)
   expect_identical(summary$stored, 0L)
 })
 
-test_that("rt_rotate zips closed days and rt_coverage reports them", {
+test_that("rt2s_archive_rotate zips closed days and rt2s_archive_coverage reports them", {
   skip_if(!nzchar(Sys.which("zip")), "zip utility not available")
 
   archive <- tempfile("archive")
@@ -59,7 +59,7 @@ test_that("rt_rotate zips closed days and rt_coverage reports them", {
   )
   data.table::fwrite(manifest, file.path(feed_dir, "manifest.csv"))
 
-  written <- rt_rotate(archive)
+  written <- rt2s_archive_rotate(archive)
   expect_identical(basename(written), "20260714.zip")
   expect_false(dir.exists(old_day))
   expect_identical(
@@ -67,17 +67,29 @@ test_that("rt_rotate zips closed days and rt_coverage reports them", {
     c("063000.pb", "063030.pb")
   )
 
-  cov <- rt_coverage(archive)
+  cov <- rt2s_archive_coverage(archive)
   expect_identical(cov$polls, 3L)
   expect_identical(cov$stored, 2L)
   expect_identical(cov$skipped_unchanged, 1L)
   expect_identical(cov$longest_gap_s, 300)
 })
 
-test_that("rt_service_template renders all four flavors", {
+test_that("rt2s_service_template renders all four flavors", {
   for (type in c("systemd", "launchd", "cron", "docker")) {
-    tpl <- capture.output(out <- rt_service_template(type))
+    tpl <- capture.output(out <- rt2s_service_template(type))
     expect_true(nzchar(out))
-    expect_match(out, "rt_collect", fixed = TRUE)
+    expect_match(out, "rt2s_collect", fixed = TRUE)
+  }
+})
+
+test_that("every service template invokes the collector by its current name", {
+  # The generated command is a string literal, so no rename of rt2s_collect()
+  # can reach it mechanically. A stale name here ships service files that call
+  # a function which does not exist, and nothing else in the suite would notice.
+  for (type in c("systemd", "launchd", "cron", "docker")) {
+    out <- capture.output(tpl <- rt2s_service_template(type))
+    expect_match(tpl, "gtfsrt2static::rt2s_collect(", fixed = TRUE)
+    expect_false(grepl("rt_collect(", tpl, fixed = TRUE))
+    expect_false(grepl("snapshot_", tpl, fixed = TRUE))
   }
 })

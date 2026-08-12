@@ -1,7 +1,7 @@
 # Expected numbers are hand-worked from the synthetic fixtures, quantile type 7
 # with as.integer() truncation.
 
-test_that("time_window classifies half-open windows, first match wins", {
+test_that("rt2s_time_window classifies half-open windows, first match wins", {
   w <- list(am = c("06:00", "09:00"), mid = c("09:00", "12:00"))
   x <- as.POSIXct(
     c(
@@ -12,32 +12,32 @@ test_that("time_window classifies half-open windows, first match wins", {
     ),
     tz = "UTC"
   )
-  expect_identical(time_window(x, w), c("am", "am", "mid", "other"))
+  expect_identical(rt2s_time_window(x, w), c("am", "am", "mid", "other"))
   # NULL windows -> single "all" bucket; NA in -> NA out
-  expect_identical(time_window(x, NULL), rep("all", 4))
-  expect_identical(time_window(as.POSIXct(NA, tz = "UTC"), w), NA_character_)
+  expect_identical(rt2s_time_window(x, NULL), rep("all", 4))
+  expect_identical(rt2s_time_window(as.POSIXct(NA, tz = "UTC"), w), NA_character_)
   # integer seconds-of-day accepted directly
-  expect_identical(time_window(c(6L * 3600L, 15L * 3600L), w), c("am", "other"))
+  expect_identical(rt2s_time_window(c(6L * 3600L, 15L * 3600L), w), c("am", "other"))
   # empty POSIXct in -> empty out (guards the paste(character(0), ...) gotcha)
   expect_identical(
-    time_window(as.POSIXct(character(0)), w, service_date = as.Date(character(0))),
+    rt2s_time_window(as.POSIXct(character(0)), w, service_date = as.Date(character(0))),
     character(0)
   )
 })
 
-test_that("time_window uses service-day seconds for post-midnight service", {
+test_that("rt2s_time_window uses service-day seconds for post-midnight service", {
   x <- as.POSIXct("2026-07-15 00:30:00", tz = "UTC") # 00:30 next calendar day
   sd <- as.Date("2026-07-14") # attributed to previous service date
   overnight <- list(overnight = c("22:00", "26:00")) # [79200, 93600)
   # wall-clock: 00:30 -> 1800s -> matches nothing -> "other"
-  expect_identical(time_window(x, overnight), "other")
+  expect_identical(rt2s_time_window(x, overnight), "other")
   # service-day: 24:30 -> 88200s -> in [79200, 93600) -> "overnight"
-  expect_identical(time_window(x, overnight, service_date = sd), "overnight")
+  expect_identical(rt2s_time_window(x, overnight, service_date = sd), "overnight")
   # the exact service-day-seconds value the reviewer specified
   expect_identical(time_of_day_secs(x, service_date = sd), 88200)
 })
 
-test_that("obs_headways windows post-midnight service by service day", {
+test_that("rt2s_obs_headways windows post-midnight service by service day", {
   # two runs of one trip pattern, both departing after midnight but attributed
   # to service_date 2026-07-14; 30-min headway within the overnight window.
   mk <- function(tr, start_ct) {
@@ -55,21 +55,21 @@ test_that("obs_headways windows post-midnight service by service day", {
     mk("N1", as.POSIXct("2026-07-15 00:30:00", tz = "UTC")),
     mk("N2", as.POSIXct("2026-07-15 01:00:00", tz = "UTC"))
   )
-  h <- obs_headways(ev, windows = list(overnight = c("22:00", "26:00")))
+  h <- rt2s_obs_headways(ev, windows = list(overnight = c("22:00", "26:00")))
   expect_identical(h$window, "overnight")
   expect_identical(h$headway_median, 1800L)
   expect_identical(h$n_headways, 1L)
 })
 
-test_that("obs_headways validates max_headway_secs", {
+test_that("rt2s_obs_headways validates max_headway_secs", {
   ev <- make_events_clean()
-  expect_error(obs_headways(ev, max_headway_secs = c(1, 2)), "single positive")
-  expect_error(obs_headways(ev, max_headway_secs = -1), "single positive")
-  expect_error(obs_headways(ev, max_headway_secs = NA), "single positive")
+  expect_error(rt2s_obs_headways(ev, max_headway_secs = c(1, 2)), "single positive")
+  expect_error(rt2s_obs_headways(ev, max_headway_secs = -1), "single positive")
+  expect_error(rt2s_obs_headways(ev, max_headway_secs = NA), "single positive")
 })
 
-test_that("obs_headways returns exact quantiles per window", {
-  h <- obs_headways(
+test_that("rt2s_obs_headways returns exact quantiles per window", {
+  h <- rt2s_obs_headways(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     quantiles = c(p05 = 0.05, median = 0.5, p95 = 0.95)
@@ -84,10 +84,10 @@ test_that("obs_headways returns exact quantiles per window", {
   expect_identical(h$n_headways, 3L)
 })
 
-test_that("obs_headways ignores skipped/canceled trip starts (stale times)", {
+test_that("rt2s_obs_headways ignores skipped/canceled trip starts (stale times)", {
   clean <- make_events_clean() # R1/dir0 served starts 06:00/06:10/06:22/06:40
   win <- list(am = c("06:00", "09:00"))
-  base <- obs_headways(clean, windows = win)
+  base <- rt2s_obs_headways(clean, windows = win)
   # a canceled trip and a skipped-only 'trip' both carrying stale timestamps
   # that fall between real starts; neither actually served a stop.
   bad <- data.frame(
@@ -104,16 +104,16 @@ test_that("obs_headways ignores skipped/canceled trip starts (stale times)", {
     vehicle_ref = "v", source = "trip_updates", stringsAsFactors = FALSE
   )
   ev <- data.table::rbindlist(list(clean, bad))
-  h <- obs_headways(ev, windows = win)
+  h <- rt2s_obs_headways(ev, windows = win)
   # stale unserved times must not manufacture extra (shorter) headways
   expect_identical(h$n_headways, base$n_headways)
   expect_identical(h$headway_median, base$headway_median)
   expect_identical(h$headway_p95, base$headway_p95)
 })
 
-test_that("obs_headways drops non-positive and over-cutoff gaps", {
+test_that("rt2s_obs_headways drops non-positive and over-cutoff gaps", {
   # single run -> no consecutive pair -> no row for that group
-  h <- obs_headways(make_events_degenerate())
+  h <- rt2s_obs_headways(make_events_degenerate())
   expect_false("R3" %in% h$route_ref)
   # R4 has two runs 10 min apart -> one headway of 600s survives
   r4 <- h[route_ref == "R4"]
@@ -121,17 +121,18 @@ test_that("obs_headways drops non-positive and over-cutoff gaps", {
   expect_identical(r4$headway_median, 600L)
 })
 
-test_that("obs_headways_by_passage works when trip_ref is block-style", {
+test_that("passage mode works when trip_ref is block-style", {
   ev <- make_events_shared_trip_ref_passages()
   win <- list(am = c("06:00", "09:00"))
 
-  expect_identical(nrow(obs_headways(ev, windows = win)), 0L)
+  expect_identical(nrow(rt2s_obs_headways(ev, windows = win)), 0L)
 
-  h <- obs_headways_by_passage(
+  h <- rt2s_obs_headways(
     ev,
     reference_stops = "S1",
     windows = win,
-    quantiles = c(median = 0.5, p95 = 0.95)
+    quantiles = c(median = 0.5, p95 = 0.95),
+    method = "passage"
   )
   expect_identical(h$route_ref, "R9")
   expect_identical(h$direction_id, 0L)
@@ -142,11 +143,12 @@ test_that("obs_headways_by_passage works when trip_ref is block-style", {
   expect_identical(h$n_headways, 2L)
 })
 
-test_that("obs_headways_by_passage auto-selects direction-unique stops", {
-  h <- obs_headways_by_passage(
+test_that("passage mode auto-selects direction-unique stops", {
+  h <- rt2s_obs_headways(
     make_events_auto_reference_selection(),
     windows = list(am = c("06:00", "09:00")),
-    quantiles = c(median = 0.5)
+    quantiles = c(median = 0.5),
+    method = "passage"
   )
   data.table::setorder(h, route_ref, direction_id)
   expect_identical(h$route_ref, c("R20", "R20", "R21"))
@@ -156,48 +158,52 @@ test_that("obs_headways_by_passage auto-selects direction-unique stops", {
   expect_identical(h$n_headways, c(2L, 2L, 2L))
 })
 
-test_that("obs_headways_by_passage collapses dwell detections", {
-  h <- obs_headways_by_passage(
+test_that("passage mode collapses dwell detections", {
+  h <- rt2s_obs_headways(
     make_events_reference_stop_dwell(),
     reference_stops = "S1",
     windows = list(am = c("06:00", "09:00")),
-    min_revisit_gap_s = 300L
+    min_revisit_gap_s = 300L,
+    method = "passage"
   )
   expect_identical(h$headway_median, 600L)
   expect_identical(h$headway_p95, 600L)
   expect_identical(h$n_headways, 2L)
 })
 
-test_that("obs_headways_by_passage separates same-vehicle revisits after the gap", {
-  h <- obs_headways_by_passage(
+test_that("passage mode separates same-vehicle revisits after the gap", {
+  h <- rt2s_obs_headways(
     make_events_same_vehicle_revisit(),
     reference_stops = "S1",
     min_revisit_gap_s = 600L,
-    quantiles = c(median = 0.5)
+    quantiles = c(median = 0.5),
+    method = "passage"
   )
   expect_identical(h$headway_median, 1200L)
   expect_identical(h$n_headways, 1L)
 })
 
-test_that("obs_headways_by_passage keeps chained sub-gap detections in one passage", {
+test_that("passage mode keeps chained sub-gap detections in one passage", {
   expect_warning(
-    h <- obs_headways_by_passage(
+    h <- rt2s_obs_headways(
       make_events_chained_subgap(),
       reference_stops = "S1",
-      min_revisit_gap_s = 600L
+      min_revisit_gap_s = 600L,
+      method = "passage"
     ),
     "only one passage"
   )
   expect_identical(nrow(h), 0L)
 })
 
-test_that("obs_headways_by_passage treats missing vehicle ids as separate passages", {
+test_that("passage mode treats missing vehicle ids as separate passages", {
   expect_warning(
-    h <- obs_headways_by_passage(
+    h <- rt2s_obs_headways(
       make_events_missing_vehicle_passages(),
       reference_stops = c("S30", "S31", "S32"),
       windows = list(am = c("06:00", "09:00")),
-      quantiles = c(median = 0.5)
+      quantiles = c(median = 0.5),
+      method = "passage"
     ),
     "no 'vehicle_ref'"
   )
@@ -208,42 +214,49 @@ test_that("obs_headways_by_passage treats missing vehicle ids as separate passag
   expect_identical(h$n_headways, c(3L, 2L, 2L))
 })
 
-test_that("obs_headways_by_passage drops non-positive and over-cutoff gaps", {
-  h <- obs_headways_by_passage(
+test_that("passage mode drops non-positive and over-cutoff gaps", {
+  h <- rt2s_obs_headways(
     make_events_passage_gap_filters(),
     reference_stops = "S1",
     max_headway_secs = 1800L,
-    quantiles = c(median = 0.5)
+    quantiles = c(median = 0.5),
+    method = "passage"
   )
   expect_identical(h$headway_median, 1200L)
   expect_identical(h$n_headways, 1L)
 })
 
-test_that("obs_headways_by_passage uses an all window by default", {
-  h <- obs_headways_by_passage(
+test_that("passage mode uses an all window by default", {
+  h <- rt2s_obs_headways(
     make_events_shared_trip_ref_passages(),
     reference_stops = "S1",
-    quantiles = c(median = 0.5)
+    quantiles = c(median = 0.5),
+    method = "passage"
   )
   expect_identical(h$window, "all")
   expect_identical(h$headway_median, 750L)
 })
 
-test_that("obs_headways_by_passage keeps service dates separate", {
-  h <- obs_headways_by_passage(
+test_that("passage mode keeps service dates separate", {
+  h <- rt2s_obs_headways(
     make_events_passage_two_dates(),
     reference_stops = "S1",
-    quantiles = c(median = 0.5)
+    quantiles = c(median = 0.5),
+    method = "passage"
   )
   expect_identical(h$headway_median, 600L)
   expect_identical(h$n_headways, 6L)
 })
 
-test_that("obs_headways_by_passage returns a typed empty shell for no served rows", {
-  empty <- obs_headways_by_passage(make_events_skipped_only_trips())
-  non_empty <- obs_headways_by_passage(
+test_that("passage mode returns a typed empty shell for no served rows", {
+  empty <- rt2s_obs_headways(
+    make_events_skipped_only_trips(),
+    method = "passage"
+  )
+  non_empty <- rt2s_obs_headways(
     make_events_shared_trip_ref_passages(),
-    reference_stops = "S1"
+    reference_stops = "S1",
+    method = "passage"
   )
   expect_identical(nrow(empty), 0L)
   expect_identical(names(empty), names(non_empty))
@@ -253,66 +266,84 @@ test_that("obs_headways_by_passage returns a typed empty shell for no served row
   )
 })
 
-test_that("obs_headways_by_passage validates min_revisit_gap_s", {
+test_that("passage mode validates min_revisit_gap_s", {
   ev <- make_events_shared_trip_ref_passages()
   expect_error(
-    obs_headways_by_passage(ev, reference_stops = "S1", min_revisit_gap_s = 0),
-    "min_revisit_gap_s"
-  )
-  expect_error(
-    obs_headways_by_passage(ev, reference_stops = "S1", min_revisit_gap_s = -1),
-    "min_revisit_gap_s"
-  )
-  expect_error(
-    obs_headways_by_passage(ev, reference_stops = "S1", min_revisit_gap_s = NA),
-    "min_revisit_gap_s"
-  )
-  expect_error(
-    obs_headways_by_passage(
+    rt2s_obs_headways(
       ev,
       reference_stops = "S1",
-      min_revisit_gap_s = c(1, 2)
+      min_revisit_gap_s = 0,
+      method = "passage"
     ),
     "min_revisit_gap_s"
   )
   expect_error(
-    obs_headways_by_passage(
+    rt2s_obs_headways(
       ev,
       reference_stops = "S1",
-      min_revisit_gap_s = "six hundred"
+      min_revisit_gap_s = -1,
+      method = "passage"
+    ),
+    "min_revisit_gap_s"
+  )
+  expect_error(
+    rt2s_obs_headways(
+      ev,
+      reference_stops = "S1",
+      min_revisit_gap_s = NA,
+      method = "passage"
+    ),
+    "min_revisit_gap_s"
+  )
+  expect_error(
+    rt2s_obs_headways(
+      ev,
+      reference_stops = "S1",
+      min_revisit_gap_s = c(1, 2),
+      method = "passage"
+    ),
+    "min_revisit_gap_s"
+  )
+  expect_error(
+    rt2s_obs_headways(
+      ev,
+      reference_stops = "S1",
+      min_revisit_gap_s = "six hundred",
+      method = "passage"
     ),
     "min_revisit_gap_s"
   )
 })
 
-test_that("obs_headways_by_passage warns when reference stops miss groups", {
+test_that("passage mode warns when reference stops miss groups", {
   ev <- make_events_missing_reference_group()
   win <- list(am = c("06:00", "09:00"))
-  trip_start <- obs_headways(ev, windows = win, quantiles = c(median = 0.5))
+  trip_start <- rt2s_obs_headways(ev, windows = win, quantiles = c(median = 0.5))
   expect_setequal(trip_start$route_ref, c("RA", "RB"))
 
   expect_warning(
-    passage <- obs_headways_by_passage(
+    passage <- rt2s_obs_headways(
       ev,
       reference_stops = "SA",
       windows = win,
-      quantiles = c(median = 0.5)
+      quantiles = c(median = 0.5),
+      method = "passage"
     ),
     "route_ref=RB, direction_id=0"
   )
   expect_identical(unique(passage$route_ref), "RA")
 })
 
-test_that("obs_headways_by_passage warns when every group has one passage", {
-  events <- snapshot_from_trip_updates(make_updates())
+test_that("passage mode warns when every group has one passage", {
+  events <- rt2s_events_from_trip_updates(make_updates())
   expect_warning(
-    h <- obs_headways_by_passage(events, reference_stops = "S1"),
+    h <- rt2s_obs_headways(events, reference_stops = "S1", method = "passage"),
     "only one passage"
   )
   expect_identical(nrow(h), 0L)
 })
 
-test_that("obs_headways_by_passage warns when mixed groups have no headways", {
+test_that("passage mode warns when mixed groups have no headways", {
   events <- data.table::rbindlist(list(
     make_reference_passage_events(
       route = "R40",
@@ -332,36 +363,38 @@ test_that("obs_headways_by_passage warns when mixed groups have no headways", {
     )
   ))
   expect_warning(
-    h <- obs_headways_by_passage(
+    h <- rt2s_obs_headways(
       events,
       reference_stops = c("S40", "S41"),
-      max_headway_secs = 600L
+      max_headway_secs = 600L,
+      method = "passage"
     ),
     "No route-direction/date/reference-stop group produced a usable passage"
   )
   expect_identical(nrow(h), 0L)
 })
 
-test_that("obs_headways_by_passage rejects shared reference stops", {
+test_that("passage mode rejects shared reference stops", {
   ev <- make_events_shared_reference_stop()
   expect_error(
-    obs_headways_by_passage(ev, reference_stops = "S_shared"),
+    rt2s_obs_headways(ev, reference_stops = "S_shared", method = "passage"),
     "direction-unique"
   )
   expect_error(
-    obs_headways_by_passage(ev),
+    rt2s_obs_headways(ev, method = "passage"),
     "No direction-unique reference stop"
   )
 })
 
-test_that("obs_headways_by_passage handles unknown direction rows explicitly", {
+test_that("passage mode handles unknown direction rows explicitly", {
   ev <- make_events_partly_unknown_direction()
   expect_warning(
-    explicit <- obs_headways_by_passage(
+    explicit <- rt2s_obs_headways(
       ev,
       reference_stops = "S1",
       windows = list(am = c("06:00", "09:00")),
-      quantiles = c(median = 0.5)
+      quantiles = c(median = 0.5),
+      method = "passage"
     ),
     "unknown 'direction_id'"
   )
@@ -371,10 +404,11 @@ test_that("obs_headways_by_passage handles unknown direction rows explicitly", {
   expect_identical(explicit$headway_median, 600L)
 
   expect_warning(
-    automatic <- obs_headways_by_passage(
+    automatic <- rt2s_obs_headways(
       ev,
       windows = list(am = c("06:00", "09:00")),
-      quantiles = c(median = 0.5)
+      quantiles = c(median = 0.5),
+      method = "passage"
     ),
     "unknown 'direction_id'"
   )
@@ -385,15 +419,16 @@ test_that("obs_headways_by_passage handles unknown direction rows explicitly", {
   expect_identical(automatic$headway_median, 600L)
 })
 
-test_that("obs_headways_by_passage errors when every candidate direction is unknown", {
+test_that("passage mode errors when every candidate direction is unknown", {
   ev <- make_events_all_unknown_direction()
   expect_warning(
     expect_error(
-      obs_headways_by_passage(
+      rt2s_obs_headways(
         ev,
         reference_stops = "S1",
         windows = list(am = c("06:00", "09:00")),
-        quantiles = c(median = 0.5)
+        quantiles = c(median = 0.5),
+        method = "passage"
       ),
       "No direction-unique reference stop is available after excluding"
     ),
@@ -402,10 +437,11 @@ test_that("obs_headways_by_passage errors when every candidate direction is unkn
 
   expect_warning(
     expect_error(
-      obs_headways_by_passage(
+      rt2s_obs_headways(
         ev,
         windows = list(am = c("06:00", "09:00")),
-        quantiles = c(median = 0.5)
+        quantiles = c(median = 0.5),
+        method = "passage"
       ),
       "No direction-unique reference stop is available after excluding"
     ),
@@ -413,13 +449,14 @@ test_that("obs_headways_by_passage errors when every candidate direction is unkn
   )
 })
 
-test_that("obs_headways_by_passage has obs_headways-compatible summary columns", {
+test_that("rt2s_obs_headways(method = \"passage\") matches trip_start columns", {
   win <- list(am_peak = c("06:00", "09:00"))
-  trip_start <- obs_headways(make_events_clean(), windows = win)
-  passage <- obs_headways_by_passage(
+  trip_start <- rt2s_obs_headways(make_events_clean(), windows = win)
+  passage <- rt2s_obs_headways(
     make_events_clean(),
     reference_stops = "S1",
-    windows = win
+    windows = win,
+    method = "passage"
   )
   expected_cols <- c(
     "route_ref",
@@ -438,11 +475,12 @@ test_that("obs_headways_by_passage has obs_headways-compatible summary columns",
 
 test_that("passage and trip-start values coincide for the clean anchor fixture", {
   win <- list(am_peak = c("06:00", "09:00"))
-  trip_start <- obs_headways(make_events_clean(), windows = win)
-  passage <- obs_headways_by_passage(
+  trip_start <- rt2s_obs_headways(make_events_clean(), windows = win)
+  passage <- rt2s_obs_headways(
     make_events_clean(),
     reference_stops = "S1",
-    windows = win
+    windows = win,
+    method = "passage"
   )
   expected_cols <- c(
     "route_ref",
@@ -459,8 +497,79 @@ test_that("passage and trip-start values coincide for the clean anchor fixture",
   )
 })
 
-test_that("obs_travel_times returns exact quantiles and canonical order", {
-  tt <- obs_travel_times(make_events_clean())
+test_that("method = dispatches to the two paths without altering either", {
+  # 0.5.0 folded obs_headways_by_passage() into method = "passage". The entry
+  # point changed; neither implementation did. These pin that.
+  ev <- make_events_shared_trip_ref_passages()
+  win <- list(am = c("06:00", "09:00"))
+
+  expect_identical(
+    rt2s_obs_headways(
+      ev,
+      windows = win,
+      quantiles = c(median = 0.5, p95 = 0.95),
+      method = "passage",
+      reference_stops = "S1",
+      min_revisit_gap_s = 600L
+    ),
+    headways_by_passage(
+      ev,
+      reference_stops = "S1",
+      windows = win,
+      quantiles = c(median = 0.5, p95 = 0.95),
+      min_revisit_gap_s = 600L
+    )
+  )
+
+  clean <- make_events_clean()
+  expect_identical(
+    rt2s_obs_headways(clean, windows = win),
+    headways_by_trip_start(clean, windows = win)
+  )
+  expect_identical(
+    rt2s_obs_headways(clean, windows = win, method = "trip_start"),
+    headways_by_trip_start(clean, windows = win)
+  )
+})
+
+test_that("passage-only arguments warn under method = \"trip_start\"", {
+  ev <- make_events_clean()
+  win <- list(am_peak = c("06:00", "09:00"))
+
+  expect_warning(
+    rt2s_obs_headways(ev, windows = win, reference_stops = "S1"),
+    "'reference_stops' ignored when method = \"trip_start\""
+  )
+  expect_warning(
+    rt2s_obs_headways(ev, windows = win, min_revisit_gap_s = 900L),
+    "'min_revisit_gap_s' ignored when method = \"trip_start\""
+  )
+  expect_warning(
+    rt2s_obs_headways(
+      ev,
+      windows = win,
+      reference_stops = "S1",
+      min_revisit_gap_s = 900L
+    ),
+    "'reference_stops', 'min_revisit_gap_s' ignored"
+  )
+
+  # Leaving them at their defaults is silent, and passing them under
+  # method = "passage" is what they are for.
+  expect_silent(rt2s_obs_headways(ev, windows = win))
+  expect_silent(
+    rt2s_obs_headways(
+      ev,
+      windows = win,
+      method = "passage",
+      reference_stops = "S1",
+      min_revisit_gap_s = 900L
+    )
+  )
+})
+
+test_that("rt2s_obs_travel_times returns exact quantiles and canonical order", {
+  tt <- rt2s_obs_travel_times(make_events_clean())
   expect_identical(tt$stop_ref, c("S1", "S2", "S3"))
   expect_identical(tt$stop_sequence, 1:3)
   # S1 is the anchor: travel 0 at every quantile
@@ -474,15 +583,15 @@ test_that("obs_travel_times returns exact quantiles and canonical order", {
   expect_identical(unique(tt$n_obs), 4L)
 })
 
-test_that("obs_stop_order breaks arrival-second ties by canonical offset", {
-  ord <- obs_stop_order(make_events_tied())
+test_that("rt2s_obs_stop_order breaks arrival-second ties by canonical offset", {
+  ord <- rt2s_obs_stop_order(make_events_tied())
   expect_identical(ord$stop_ref, c("S0", "SA", "SB"))
   expect_identical(ord$stop_sequence, 1:3)
   # canonical offsets: S0=0, SA=median(100,90)=95, SB=median(100,110)=105
   expect_identical(ord$canonical_offset, c(0, 95, 105))
 })
 
-test_that("obs_stop_order warns on a stop visited twice within a trip (loop)", {
+test_that("rt2s_obs_stop_order warns on a stop visited twice within a trip (loop)", {
   loop <- make_events_from_offsets(
     route = "R5",
     direction_id = 0L,
@@ -491,38 +600,38 @@ test_that("obs_stop_order warns on a stop visited twice within a trip (loop)", {
     stops = c("S1", "S2", "S1"), # S1 revisited -> loop
     offsets = list(L = c(0, 120, 300))
   )
-  expect_warning(obs_stop_order(loop), "visited more than once")
+  expect_warning(rt2s_obs_stop_order(loop), "visited more than once")
 })
 
 test_that("weekday filtering is the caller's job (DECISION D)", {
   ev <- make_events_weekmix()
   # unfiltered: the Saturday run adds a spurious cross-day-type headway bucket
   # is NOT created (headways are within-date), but its trip enters travel stats
-  tt_all <- obs_travel_times(ev)
+  tt_all <- rt2s_obs_travel_times(ev)
   expect_identical(unique(tt_all$n_obs), 5L) # 4 weekday + 1 Saturday
   # caller restricts to weekdays -> Fixture A numbers reproduced exactly
   wd <- ev[as.POSIXlt(service_date)$wday %in% 1:5]
-  tt_wd <- obs_travel_times(wd)
+  tt_wd <- rt2s_obs_travel_times(wd)
   expect_identical(tt_wd[stop_ref == "S2", c(travel_p05, travel_p50, travel_p95)], c(283L, 310L, 354L))
   expect_identical(unique(tt_wd$n_obs), 4L)
 })
 
 test_that("summary functions reject malformed quantiles", {
   ev <- make_events_clean()
-  expect_error(obs_headways(ev, quantiles = c(0.5)), "named")
-  expect_error(obs_travel_times(ev, quantiles = c(p = 1.5)), "\\[0, 1\\]")
+  expect_error(rt2s_obs_headways(ev, quantiles = c(0.5)), "named")
+  expect_error(rt2s_obs_travel_times(ev, quantiles = c(p = 1.5)), "\\[0, 1\\]")
 })
 
 test_that("always-skipped stops are excluded from travel times and stop order", {
   ev <- make_events_with_skipped()
-  tt <- obs_travel_times(ev)
+  tt <- rt2s_obs_travel_times(ev)
   # S3 is skipped on every run -> no served passage -> not in the pattern
   expect_identical(sort(unique(tt$stop_ref)), c("S1", "S2"))
   expect_false(anyNA(tt$travel_p50))
   expect_false(anyNA(tt$dwell_median))
   expect_identical(unique(tt$n_obs), 3L) # 3 served runs, S3 never counts
 
-  ord <- obs_stop_order(ev)
+  ord <- rt2s_obs_stop_order(ev)
   expect_identical(sort(unique(ord$stop_ref)), c("S1", "S2"))
   expect_true(all(is.finite(ord$canonical_offset)))
 })
@@ -531,7 +640,7 @@ test_that("dwell_median is 0 (not NA) when no dwell was observed", {
   ev <- make_events_clean()
   ev[, departure_time := arrival_time] # zero dwell everywhere
   ev[stop_ref == "S2", departure_time := as.POSIXct(NA, tz = "UTC")]
-  tt <- obs_travel_times(ev)
+  tt <- rt2s_obs_travel_times(ev)
   # S2 arrivals are still timed -> S2 stays, its dwell collapses to 0 not NA
   expect_true("S2" %in% tt$stop_ref)
   expect_identical(tt[stop_ref == "S2", dwell_median], 0L)

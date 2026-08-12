@@ -1,9 +1,9 @@
-test_that("snapshot_scaffold builds a linked, required-files-complete feed", {
-  events <- snapshot_from_trip_updates(make_updates())
+test_that("rt2s_scaffold builds a linked, required-files-complete feed", {
+  events <- rt2s_events_from_trip_updates(make_updates())
   stops <- make_baseline()$stops
 
   expect_warning(
-    feed <- snapshot_scaffold(
+    feed <- rt2s_scaffold(
       events,
       agency = list(
         name = "Example Transit",
@@ -46,29 +46,29 @@ test_that("snapshot_scaffold builds a linked, required-files-complete feed", {
 })
 
 test_that("scaffold warns on placeholders and missing coordinates", {
-  events <- snapshot_from_stop_times(make_g2g_stop_times())
-  warns <- capture_warnings(feed <- snapshot_scaffold(events))
+  events <- rt2s_events_from_stop_times(make_g2g_stop_times())
+  warns <- capture_warnings(feed <- rt2s_scaffold(events))
   expect_match(warns, "placeholder", all = FALSE)
   expect_match(warns, "no coordinates", all = FALSE)
   expect_true(all(is.na(feed$stops$stop_lat)))
 })
 
 test_that("post-midnight stops render as >24:00:00 clock strings", {
-  events <- snapshot_from_stop_times(make_g2g_stop_times())
+  events <- rt2s_events_from_stop_times(make_g2g_stop_times())
   # push one stop past midnight while keeping its service date
   events[1, arrival_time := as.POSIXct("2026-07-15 00:07:52", tz = "UTC")]
   events[1, departure_time := as.POSIXct("2026-07-15 00:08:15", tz = "UTC")]
   events[1, stop_sequence := 99L]
 
-  feed <- suppressWarnings(snapshot_scaffold(events))
+  feed <- suppressWarnings(rt2s_scaffold(events))
   late <- feed$stop_times[stop_sequence == 99L]
   expect_identical(late$arrival_time, "24:07:52")
   expect_identical(late$departure_time, "24:08:15")
 })
 
 test_that("scaffold round-trips through gtfsio export/import", {
-  events <- snapshot_from_trip_updates(make_updates())
-  feed <- suppressWarnings(snapshot_scaffold(
+  events <- rt2s_events_from_trip_updates(make_updates())
+  feed <- suppressWarnings(rt2s_scaffold(
     events,
     agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
     stops = make_baseline()$stops
@@ -86,11 +86,11 @@ test_that("scaffold round-trips through gtfsio export/import", {
   )
 })
 
-test_that("snapshot_assemble in baseline mode keeps official ids", {
-  events <- snapshot_from_trip_updates(make_updates())
+test_that("rt2s_assemble in baseline mode keeps official ids", {
+  events <- rt2s_events_from_trip_updates(make_updates())
 
   expect_warning(
-    feed <- snapshot_assemble(events, baseline = make_baseline()),
+    feed <- rt2s_assemble(events, baseline = make_baseline()),
     NA
   )
 
@@ -111,14 +111,14 @@ test_that("snapshot_assemble in baseline mode keeps official ids", {
   expect_identical(as.character(feed$routes$route_id), "B62")
 })
 
-test_that("snapshot_assemble errors and warns usefully", {
-  events <- snapshot_from_trip_updates(make_updates())
+test_that("rt2s_assemble errors and warns usefully", {
+  events <- rt2s_events_from_trip_updates(make_updates())
 
   # multi-date events require an explicit service_date
   two_days <- data.table::copy(events)
   two_days[1, service_date := service_date + 1]
   expect_error(
-    snapshot_assemble(two_days, baseline = make_baseline()),
+    rt2s_assemble(two_days, baseline = make_baseline()),
     "Pass 'service_date'"
   )
 
@@ -127,13 +127,13 @@ test_that("snapshot_assemble errors and warns usefully", {
   renamed[trip_ref == "CS_1", trip_ref := "UNKNOWN_TRIP"]
   expect_error(
     suppressWarnings(
-      snapshot_assemble(renamed, baseline = make_baseline())
+      rt2s_assemble(renamed, baseline = make_baseline())
     ),
     "None of the observed trips match"
   )
 
   # scaffold path is used when no baseline is given
-  feed <- suppressWarnings(snapshot_assemble(events))
+  feed <- suppressWarnings(rt2s_assemble(events))
   expect_s3_class(feed, "gtfs")
   expect_true("calendar_dates" %in% names(feed))
 })
@@ -154,8 +154,8 @@ test_that("overnight POSIXct stop times scaffold to >24:00:00 clock strings", {
     )
   )
 
-  events <- snapshot_from_stop_times(st)
-  feed <- suppressWarnings(snapshot_scaffold(events, tz = tz))
+  events <- rt2s_events_from_stop_times(st)
+  feed <- suppressWarnings(rt2s_scaffold(events, tz = tz))
 
   expect_identical(unique(feed$calendar_dates$date), 20260714L)
   expect_identical(feed$stop_times$arrival_time, c("23:50:10", "24:05:20"))
@@ -163,17 +163,17 @@ test_that("overnight POSIXct stop times scaffold to >24:00:00 clock strings", {
 })
 
 test_that("strict mode errors on placeholder agency and missing coordinates", {
-  events <- snapshot_from_stop_times(make_g2g_stop_times())
+  events <- rt2s_events_from_stop_times(make_g2g_stop_times())
 
   # No agency, no stops -> strict should error (not warn)
   expect_error(
-    snapshot_scaffold(events, strict = TRUE),
+    rt2s_scaffold(events, strict = TRUE),
     "strict mode"
   )
 
   # Agency given but stops still missing coordinates -> still errors
   expect_error(
-    snapshot_scaffold(
+    rt2s_scaffold(
       events,
       agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
       strict = TRUE
@@ -183,7 +183,7 @@ test_that("strict mode errors on placeholder agency and missing coordinates", {
 
   # Fully specified -> no error, no warning
   expect_no_warning(
-    feed <- snapshot_scaffold(
+    feed <- rt2s_scaffold(
       events,
       agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
       stops = data.frame(
@@ -201,7 +201,7 @@ test_that("strict mode errors on placeholder agency and missing coordinates", {
 test_that("baseline mode preserves official trip_ids from provided_trip_id", {
   st <- make_g2g_stop_times()
   st$provided_trip_id <- c("CS_1", "CS_1", "CS_2", "CS_2")
-  events <- snapshot_from_stop_times(st)
+  events <- rt2s_events_from_stop_times(st)
 
   baseline <- make_baseline()
   # baseline trips.txt must contain the official ids for them to survive
@@ -213,7 +213,7 @@ test_that("baseline mode preserves official trip_ids from provided_trip_id", {
   )
 
   feed <- suppressWarnings(
-    snapshot_assemble(events, baseline = baseline, service_date = "2026-07-14")
+    rt2s_assemble(events, baseline = baseline, service_date = "2026-07-14")
   )
   expect_true(all(c("CS_1", "CS_2") %in% feed$trips$trip_id))
   expect_true(all(feed$stop_times$trip_id %in% c("CS_1", "CS_2")))
@@ -221,7 +221,7 @@ test_that("baseline mode preserves official trip_ids from provided_trip_id", {
 
 test_that("shapes are linked to trips.shape_id via shape_ref", {
   st <- make_g2g_stop_times() # internal trip_id 1,1,2,2
-  events <- snapshot_from_stop_times(st, shape_ref_prefix = "SHP_")
+  events <- rt2s_events_from_stop_times(st, shape_ref_prefix = "SHP_")
   shapes <- data.frame(
     shape_id = c("SHP_1", "SHP_1", "SHP_2", "SHP_2"),
     shape_pt_lat = c(40.71, 40.72, 40.72, 40.71),
@@ -229,7 +229,7 @@ test_that("shapes are linked to trips.shape_id via shape_ref", {
     shape_pt_sequence = c(1L, 2L, 1L, 2L),
     shape_dist_traveled = c(0, 100, 0, 100)
   )
-  feed <- suppressWarnings(snapshot_scaffold(
+  feed <- suppressWarnings(rt2s_scaffold(
     events,
     agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
     stops = data.frame(stop_id = c("S1", "S2"),
@@ -249,7 +249,7 @@ test_that("shapes are linked to trips.shape_id via shape_ref", {
 
 test_that("a shape reference with no geometry drops shape_id and warns", {
   st <- make_g2g_stop_times()
-  events <- snapshot_from_stop_times(st, shape_ref_prefix = "SHP_")
+  events <- rt2s_events_from_stop_times(st, shape_ref_prefix = "SHP_")
   shapes <- data.frame(
     shape_id = c("SHP_1", "SHP_1"), # SHP_2 missing
     shape_pt_lat = c(40.71, 40.72),
@@ -257,7 +257,7 @@ test_that("a shape reference with no geometry drops shape_id and warns", {
     shape_pt_sequence = c(1L, 2L)
   )
   expect_warning(
-    feed <- snapshot_scaffold(
+    feed <- rt2s_scaffold(
       events,
       agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
       stops = data.frame(stop_id = c("S1", "S2"),
@@ -276,7 +276,7 @@ test_that("a shape reference with no geometry drops shape_id and warns", {
 
 test_that("shapes without shape_ref warn and are dropped; strict errors", {
   st <- make_g2g_stop_times()
-  events <- snapshot_from_stop_times(st) # no shape_ref_prefix -> shape_ref NA
+  events <- rt2s_events_from_stop_times(st) # no shape_ref_prefix -> shape_ref NA
   shapes <- data.frame(
     shape_id = "SHP_1", shape_pt_lat = 40.71, shape_pt_lon = -74.01,
     shape_pt_sequence = 1L
@@ -290,19 +290,19 @@ test_that("shapes without shape_ref warn and are dropped; strict errors", {
     shapes = shapes, route_type = 3L
   )
   expect_warning(
-    feed <- do.call(snapshot_scaffold, args),
+    feed <- do.call(rt2s_scaffold, args),
     "carry no shape_ref"
   )
   expect_false("shapes" %in% names(feed))
   expect_error(
-    do.call(snapshot_scaffold, c(args, list(strict = TRUE))),
+    do.call(rt2s_scaffold, c(args, list(strict = TRUE))),
     "shape_ref"
   )
 })
 
 test_that("feed_lang and contact fields are written to feed_info", {
-  events <- snapshot_from_stop_times(make_g2g_stop_times())
-  feed <- suppressWarnings(snapshot_scaffold(
+  events <- rt2s_events_from_stop_times(make_g2g_stop_times())
+  feed <- suppressWarnings(rt2s_scaffold(
     events,
     agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
     stops = data.frame(stop_id = c("S1", "S2"),
@@ -318,18 +318,18 @@ test_that("feed_lang and contact fields are written to feed_info", {
   expect_identical(feed$feed_info$feed_contact_url, "https://example.org/contact")
 })
 
-test_that("snapshot_publishable records blockers programmatically", {
-  events <- snapshot_from_stop_times(make_g2g_stop_times())
+test_that("rt2s_publishable records blockers programmatically", {
+  events <- rt2s_events_from_stop_times(make_g2g_stop_times())
 
   # No agency, no coords -> not publishable, two blockers
-  bad <- suppressWarnings(snapshot_scaffold(events))
-  st_bad <- snapshot_publishable(bad)
+  bad <- suppressWarnings(rt2s_scaffold(events))
+  st_bad <- rt2s_publishable(bad)
   expect_false(st_bad$publishable)
   expect_true(any(grepl("agency", st_bad$blockers)))
   expect_true(any(grepl("coordinates", st_bad$blockers)))
 
   # Fully specified -> publishable, no blockers
-  good <- snapshot_scaffold(
+  good <- rt2s_scaffold(
     events,
     agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
     stops = data.frame(stop_id = c("S1", "S2"),
@@ -337,7 +337,7 @@ test_that("snapshot_publishable records blockers programmatically", {
                        stop_lon = c(80.64, 80.65)),
     route_type = 3L
   )
-  st_good <- snapshot_publishable(good)
+  st_good <- rt2s_publishable(good)
   expect_true(st_good$publishable)
   expect_length(st_good$blockers, 0L)
 
@@ -346,7 +346,7 @@ test_that("snapshot_publishable records blockers programmatically", {
 })
 
 test_that("baseline-mode feeds are publishable when baseline is complete", {
-  events <- snapshot_from_trip_updates(make_updates())
-  feed <- suppressWarnings(snapshot_assemble(events, baseline = make_baseline()))
-  expect_true(snapshot_publishable(feed)$publishable)
+  events <- rt2s_events_from_trip_updates(make_updates())
+  feed <- suppressWarnings(rt2s_assemble(events, baseline = make_baseline()))
+  expect_true(rt2s_publishable(feed)$publishable)
 })

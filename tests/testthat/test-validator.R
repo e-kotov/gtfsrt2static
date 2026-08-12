@@ -131,7 +131,7 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
     ), tz = tz),
     provided_trip_id = c("T1", "T1", "T1", "T2", "T2", "T2")
   )
-  events <- snapshot_from_stop_times(st, route_ref = "R1", shape_ref_prefix = "SHP_")
+  events <- rt2s_events_from_stop_times(st, route_ref = "R1", shape_ref_prefix = "SHP_")
 
   shapes <- data.frame(
     shape_id = c("SHP_1", "SHP_1", "SHP_1", "SHP_2", "SHP_2", "SHP_2"),
@@ -141,7 +141,7 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
     shape_dist_traveled = c(0, 100, 200, 0, 100, 200)
   )
 
-  feed <- snapshot_scaffold(
+  feed <- rt2s_scaffold(
     events,
     agency = list(
       name = "Test Transit",
@@ -179,7 +179,7 @@ test_that("assembled feeds have no ERROR-level MobilityData validator notices", 
 test_that("frequency-based scenario feeds have no ERROR-level validator notices", {
   skip_unless_validator_enabled()
 
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = list(am_peak = c("06:00", "09:00")),
     agency = list(name = "Test Transit", url = "https://example.org", timezone = "UTC"),
@@ -219,10 +219,10 @@ test_that("baseline-anchored frequency feeds have no ERROR-level validator notic
     grid$ratio <- as.numeric(ratios[grid$scenario])
     grid
   }))
-  sched <- baseline_headways(baseline, windows = windows)
+  sched <- rt2s_baseline_headways(baseline, windows = windows)
   sched$scenario <- "scheduled"
 
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = windows,
     quantiles = list(
@@ -277,7 +277,7 @@ test_that("a mixed frequency + exact-time feed has no ERROR-level validator noti
   windows <- list(am_peak = c("06:00", "09:00"))
   extra <- make_extra_trips(c("X_exact_1", "X_exact_2"))
 
-  feeds <- snapshot_frequencies(
+  feeds <- rt2s_frequencies(
     make_events_clean(),
     windows = windows,
     agency = list(name = "Test Transit", url = "https://example.org", timezone = "UTC"),
@@ -321,7 +321,7 @@ test_that("passage-based frequency feeds have no ERROR-level validator notices",
   skip_unless_validator_enabled()
 
   feed <- suppressWarnings(
-    snapshot_frequencies(
+    rt2s_frequencies(
       make_events_shared_trip_ref_passages(),
       windows = list(am = c("06:00", "09:00")),
       quantiles = c(median = 0.5),
