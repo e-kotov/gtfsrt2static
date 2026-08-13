@@ -90,9 +90,28 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #' pattern instead and vary only service levels: see
 #' \code{\link{rt2s_baseline_patterns}} and \code{pattern_source = "baseline"}.
 #'
+#' @section Where the candidate headway groups come from:
+#' A \strong{headway group} is one \code{(route_ref, direction_id, window)} - the
+#' object \code{frequencies.txt} describes, and what EN 12896 (Transmodel) calls
+#' a headway journey group. One representative trip is emitted per group.
+#'
+#' By default the candidate groups are derived from \code{events}: a group with
+#' no observed runs is not a candidate. Under
+#' \code{pattern_source = "baseline"} that is the wrong gate, because the pattern
+#' comes from \code{baseline}, the ratio from \code{scaling} and the headway from
+#' \code{headways}, so \code{events} contributes nothing to such a group's output.
+#' \code{headway_groups} names those groups directly; candidacy then becomes the
+#' events-derived groups \strong{union} the supplied ones, and \code{events} may
+#' be \code{NULL} entirely.
+#'
 #' @param events Observed stop events (see \link{observed-stop-events}).
 #'   Restrict them to the service dates that form one service pattern before
 #'   calling (e.g. weekdays only) - no day-type filtering is imposed here.
+#'
+#'   May be \code{NULL} when \code{headway_groups} is supplied, in which case no
+#'   headway analytics run at all and every headway must come from
+#'   \code{headways}. \code{NULL} without \code{headway_groups} is an error:
+#'   there would be no candidate headway group.
 #' @param windows Named list of \code{c(start, end)} time strings defining the
 #'   frequency windows, passed to \code{\link{rt2s_time_window}} (overnight windows
 #'   such as \code{c("22:00", "26:00")} are supported). Required: a
@@ -125,8 +144,24 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   agency or stop coordinates are recorded as publish blockers on every
 #'   returned feed (or error under \code{strict}).
 #' @param service_id Identifier for the single synthesized service; its
-#'   \code{calendar.txt} row is active on the weekdays present in \code{events}
-#'   over the observed date range. Default \code{"SVC1"}.
+#'   \code{calendar.txt} row is active on the weekdays present in the resolved
+#'   service dates, over their range. Default \code{"SVC1"}.
+#' @param service_dates Optional \code{Date} vector giving the days this feed
+#'   describes. It replaces the dates that would otherwise be read from
+#'   \code{events$service_date}, and is reduced by the same rule: weekday flags
+#'   plus the minimum and maximum date. Required when \code{events} is
+#'   \code{NULL}; \code{\link{rt2s_baseline_service_dates}} is the way to inherit
+#'   the baseline's own days.
+#'
+#'   Dates inside \code{[min, max]} whose weekday \emph{is} served but which are
+#'   absent from this vector are written to \code{calendar_dates.txt} with
+#'   \code{exception_type = 2}, so a span with holes in it is not overstated as
+#'   uninterrupted service. A date set with no holes emits no
+#'   \code{calendar_dates.txt} at all.
+#'
+#'   Supplying \code{headway_groups} without \code{service_dates} warns when the
+#'   supplied groups widen the feed past what \code{events} covers: the calendar
+#'   then still describes only the observed span.
 #' @param exact_times \code{frequencies.exact_times}: \code{0} (default,
 #'   frequency-based) or \code{1} (schedule-based).
 #' @param max_headway_secs Passed to \code{\link{rt2s_obs_headways}}; gaps above
@@ -161,13 +196,13 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   describes the observed span, and the representative trips reference no
 #'   baseline shape.
 #'
-#'   \strong{Identity contract:} \code{events$route_ref} must carry the same
-#'   identifier as the baseline's \code{trips.route_id} (or
-#'   \code{routes.route_short_name} under \code{route_key}), and
-#'   \code{direction_id} must agree. A completely disjoint key set is an error;
-#'   observed keys with no baseline pattern are dropped with a warning, and
-#'   baseline routes with no observed headway are reported and skipped rather
-#'   than given an invented headway.
+#'   \strong{Identity contract:} the \code{route_ref} of \code{events} and of
+#'   \code{headway_groups} must carry the same identifier as the baseline's
+#'   \code{trips.route_id} (or \code{routes.route_short_name} under
+#'   \code{route_key}), and \code{direction_id} must agree. A completely disjoint
+#'   key set is an error; candidate keys with no baseline pattern are dropped
+#'   with a warning, and baseline routes that are in no candidate headway group
+#'   are reported and skipped rather than given an invented headway.
 #' @param pattern_source Where the representative stop pattern comes from.
 #'   \code{"observed"} (default) reconstructs it from \code{events} via
 #'   \code{\link{rt2s_obs_travel_times}}. \code{"baseline"} anchors on the published
@@ -183,18 +218,42 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   plausibility bounds belong to whatever estimated them. \code{scenario}
 #'   values must be names of \code{quantiles}.
 #' @param scaling_missing What to do when \code{scaling} has no ratio for an
-#'   emitted \code{(route, direction, window, scenario)} cell. \code{"error"}
-#'   (default) reports the offending cells. \code{"drop"} removes those trips
-#'   from \strong{every} scenario, with a warning - never from just the scenario
-#'   that lacks a ratio, which would leave the feeds with different trip sets.
-#' @param headways Optional per-cell headway override: a data.frame keyed
+#'   emitted headway group/scenario pair. \code{"error"} (default) reports the
+#'   offending pairs. \code{"drop"} removes
+#'   those trips from \strong{every} scenario, with a warning - never from just
+#'   the scenario that lacks a ratio, which would leave the feeds with different
+#'   trip sets.
+#' @param headways Optional per-group headway override: a data.frame keyed
 #'   \code{route_ref}, \code{direction_id}, \code{window}, \code{scenario} with a
 #'   positive \code{headway_secs}. It supersedes the quantile-derived headway for
-#'   exactly the cells it lists; unlisted cells keep their observed value. This
-#'   is how a scenario whose frequency does not come from observations at all -
-#'   a planned "scheduled" feed, via \code{\link{rt2s_baseline_headways}} - is
-#'   expressed without a second way of naming scenarios. Rows naming a cell that
-#'   is not emitted are ignored with a warning.
+#'   exactly the headway groups it lists; unlisted groups keep their observed
+#'   value. This is how a scenario whose frequency does not come from
+#'   observations at all - a planned "scheduled" feed, via
+#'   \code{\link{rt2s_baseline_headways}} - is expressed without a second way of
+#'   naming scenarios. Rows naming a headway group that is not emitted are
+#'   ignored with a warning.
+#'
+#'   A group with \strong{no} resolvable headway in some scenario - no observed
+#'   quantile and no override - is dropped from \strong{every} scenario with
+#'   \code{drop_reason = "no_headway"}, exactly as
+#'   \code{scaling_missing = "drop"} behaves and for the same shared-trip-set
+#'   reason. Use \code{extra_trips} to carry service that cannot be written as a
+#'   repeating headway.
+#' @param headway_groups Optional candidate headway groups, supplied rather than
+#'   derived: a data.frame keyed \code{route_ref}, \code{direction_id},
+#'   \code{window} - the \code{scaling}/\code{headways} key minus
+#'   \code{scenario}, because candidacy is a property of the group and not of the
+#'   scenario. Valid only with \code{pattern_source = "baseline"}; passing it
+#'   under \code{"observed"} is an error, since an observed pattern can only be
+#'   reconstructed for a group that has events.
+#'
+#'   Candidacy becomes the events-derived groups \strong{union} these, so a group
+#'   with no observed runs is still emitted when \code{scaling} gives it a ratio
+#'   and \code{headways} gives it a headway. A supplied group with no baseline
+#'   stop pattern is \emph{not} an error: it warns and appears in
+#'   \code{\link{rt2s_resolved_grid}} with
+#'   \code{drop_reason = "no_stop_pattern"}, which is what makes a caller's drop
+#'   funnel able to see it.
 #' @param route_key Which baseline column supplies route identity, passed to
 #'   \code{\link{rt2s_baseline_patterns}}. Baseline mode only.
 #' @param extra_trips Optional individually-timed trips to add to the emitted
@@ -221,8 +280,10 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   them exact-time trips: per the GTFS specification only trips listed in
 #'   \code{frequencies.txt} are frequency-based, and the rest are read from
 #'   \code{stop_times} as scheduled times. A feed may mix the two, so this is a
-#'   standard-compliant feed, not a workaround - it is how a cell that cannot be
-#'   expressed as a repeating headway is carried.
+#'   standard-compliant feed, not a workaround - it is how a headway group that
+#'   cannot be expressed as a repeating headway is carried. Since a group with no
+#'   resolvable headway is now a drop, this is the \strong{only} way to carry
+#'   such service.
 #'
 #'   Their stops and routes are added to \code{stops.txt} and \code{routes.txt},
 #'   but every referenced \code{stop_id} must already be known (from \code{stops}
@@ -233,13 +294,14 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'
 #'   \strong{No cross-scenario invariant is imposed.} A scenario may supply more,
 #'   fewer or no extra trips than another, because the exact-time evidence for a
-#'   cell legitimately differs by scenario. The shared-trip-set guarantee below
+#'   headway group legitimately differs by scenario. The shared-trip-set guarantee below
 #'   is scoped to the \emph{generated frequency} trips, which is where
 #'   \code{scaling_missing} enforces it.
 #'
 #'   Extra trips are \strong{not} rows of \code{\link{rt2s_resolved_grid}}: the grid
-#'   is one row per candidate \code{(route, direction, window)} cell and extra
-#'   trips are not cells. Reconciling a feed's \code{trips.txt} therefore means
+#'   is one row per candidate \code{(route, direction, window)} headway group and
+#'   extra trips are not groups. Reconciling a feed's \code{trips.txt} therefore
+#'   means
 #'   \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
 #'   supplies the extra trips, so it already owns those ids.
 #' @return A named list of gtfsio-convention feed objects, one per quantile
@@ -254,21 +316,23 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   guarantee by design and may differ per scenario.
 #'
 #'   The list carries a \code{resolved_grid} attribute: one row per candidate
-#'   \code{(route, direction, window)} and scenario, recording the ratio and
-#'   headway actually applied and, for cells that never reached the feed, why.
-#'   Read it with \code{\link{rt2s_resolved_grid}}. Cells dropped for want of a stop
-#'   pattern or a ratio are present and flagged rather than absent, so the grid
-#'   reconciles against a caller's own drop accounting.
-#' @seealso \code{\link{rt2s_resolved_grid}} for the resolved grid.
+#'   \code{(route, direction, window)} headway group and scenario, recording the
+#'   ratio and headway actually applied and, for groups that never reached the
+#'   feed, why. Read it with \code{\link{rt2s_resolved_grid}}. Groups dropped for
+#'   want of a stop pattern, a ratio or a headway are present and flagged rather
+#'   than absent, so the grid reconciles against a caller's own drop accounting.
+#' @seealso \code{\link{rt2s_resolved_grid}} for the resolved grid,
+#'   \code{\link{rt2s_baseline_service_dates}} for \code{service_dates}.
 #' @export
 rt2s_frequencies <- function(
-  events,
+  events = NULL,
   windows,
   quantiles = c(structural = 0.05, median = 0.5, reliable = 0.95),
   agency = NULL,
   stops = NULL,
   route_type = 3L,
   service_id = "SVC1",
+  service_dates = NULL,
   exact_times = 0L,
   feed_lang = "en",
   feed_contact_email = NULL,
@@ -283,10 +347,19 @@ rt2s_frequencies <- function(
   scaling = NULL,
   scaling_missing = c("error", "drop"),
   headways = NULL,
+  headway_groups = NULL,
   route_key = c("route_id", "route_short_name"),
   extra_trips = NULL
 ) {
-  dt <- rt2s_events_validate(events)
+  if (is.null(events) && is.null(headway_groups)) {
+    stop(
+      "'events' is NULL and no 'headway_groups' were supplied, so there is no ",
+      "candidate headway group to build a feed from. Pass observed stop ",
+      "events, or name the groups explicitly with headway_groups=.",
+      call. = FALSE
+    )
+  }
+  dt <- if (is.null(events)) NULL else rt2s_events_validate(events)
   q <- resolve_quantiles(quantiles)
   headway_method <- match.arg(headway_method)
   pattern_source <- match.arg(pattern_source)
@@ -319,6 +392,14 @@ rt2s_frequencies <- function(
       "pattern_source = \"baseline\" needs 'scaling': a running-time ratio per ",
       "(route_ref, direction_id, window, scenario). Use ratio = 1 for a ",
       "scenario that keeps the planned running times.",
+      call. = FALSE
+    )
+  }
+  if (!anchored && !is.null(headway_groups)) {
+    stop(
+      "'headway_groups' only applies to pattern_source = \"baseline\"; an ",
+      "observed pattern can only be reconstructed for groups that have ",
+      "events.",
       call. = FALSE
     )
   }
@@ -369,7 +450,12 @@ rt2s_frequencies <- function(
   # rt2s_obs_headways(): its missing()-based ignored-argument warning cannot see
   # through this frame, and the equivalent warning was already raised above
   # against 'headway_method'.
-  hw <- if (identical(headway_method, "trip_start")) {
+  # With no events there are no headway analytics to run at all: every headway
+  # then has to come from 'headways', and the empty shell below is what the
+  # supplied groups are unioned onto.
+  hw <- if (is.null(dt)) {
+    empty_headway_grid(scen)
+  } else if (identical(headway_method, "trip_start")) {
     headways_by_trip_start(
       dt,
       windows = windows,
@@ -387,6 +473,33 @@ rt2s_frequencies <- function(
     )
   }
   hw <- hw[window != "other"]
+  # Candidacy is events-derived groups UNION caller-supplied ones. Under
+  # pattern_source = "baseline" the pattern comes from 'baseline', the ratio
+  # from 'scaling' and the headway from 'headways', so 'events' contributes
+  # nothing to a supplied group's output and must not gate it either.
+  n_supplied_new <- 0L
+  if (!is.null(headway_groups)) {
+    supplied <- check_headway_groups(headway_groups, windows)
+    supplied <- supplied[
+      !paste(route_ref, direction_id, window) %in%
+        hw[, paste(route_ref, direction_id, window)]
+    ]
+    n_supplied_new <- nrow(supplied)
+    if (n_supplied_new > 0L) {
+      for (s in scen) {
+        supplied[, (paste0("headway_", s)) := NA_integer_]
+      }
+      supplied[, n_headways := 0L]
+      # fill = TRUE because the passage path carries an extra
+      # reference_stop_ref column that a supplied group has no value for.
+      hw <- data.table::rbindlist(
+        list(hw, supplied),
+        use.names = TRUE,
+        fill = TRUE
+      )
+      data.table::setorder(hw, route_ref, direction_id, window)
+    }
+  }
   # The representative pattern comes from one of two sources. In baseline mode
   # rt2s_obs_travel_times() is not called at all: the pattern is the operator's
   # published one and the travel side of 'quantiles' is inert (documented).
@@ -396,19 +509,26 @@ rt2s_frequencies <- function(
     rt2s_obs_travel_times(dt, q$travel)
   }
   if (nrow(hw) == 0L) {
+    if (!is.null(headway_groups)) {
+      stop(
+        "'headway_groups' names no candidate headway group that survived ",
+        "validation, so the feed would be empty.",
+        call. = FALSE
+      )
+    }
     if (identical(headway_method, "trip_start")) {
       stop(
-        "No (route, direction, window) group has a usable trip-start ",
+        "No (route, direction, window) headway group has a usable trip-start ",
         "headway; check that 'events' cover multiple runs inside the given ",
         "windows.",
         call. = FALSE
       )
     }
     stop(
-      "No (route, direction, window) group has a usable passage headway; ",
-      "check that reference-stop events contain multiple passages inside the ",
-      "given windows, that input events preserve repeated visits, and that ",
-      "'min_revisit_gap_s' is below the true headway.",
+      "No (route, direction, window) headway group has a usable passage ",
+      "headway; check that reference-stop events contain multiple passages ",
+      "inside the given windows, that input events preserve repeated visits, ",
+      "and that 'min_revisit_gap_s' is below the true headway.",
       call. = FALSE
     )
   }
@@ -422,11 +542,11 @@ rt2s_frequencies <- function(
     window,
     sep = "_"
   )]
-  # The candidate cell set, captured before any drop stage runs. Every later
-  # stage removes trips from 'grp'; the resolved grid is reconstructed against
-  # this snapshot so a dropped cell stays visible with a reason instead of
-  # vanishing from the accounting.
-  cells <- unique(grp[, list(route_ref, direction_id, window, trip_id)])
+  # The candidate headway-group set, captured before any drop stage runs. Every
+  # later stage removes trips from 'grp'; the resolved grid is reconstructed
+  # against this snapshot so a dropped group stays visible with a reason instead
+  # of vanishing from the accounting.
+  candidate_groups <- unique(grp[, list(route_ref, direction_id, window, trip_id)])
 
   # window bounds as clock strings (normalise "HH:MM" -> "HH:MM:SS")
   win_start <- vapply(windows, function(w) secs_to_clock(hms_to_secs(w[1])), "")
@@ -453,15 +573,15 @@ rt2s_frequencies <- function(
   if (nrow(dropped) > 0L) {
     warning(
       nrow(dropped),
-      " (route, direction, window) group(s) had a headway but no ",
+      " candidate headway group(s) had no ",
       if (anchored) "baseline" else "served",
       " stop pattern and were dropped",
       if (anchored) {
         paste0(
           ", e.g. ",
           baseline_key_examples(unique(dropped[, list(route_ref, direction_id)])),
-          "; check that 'events' route_ref uses the same identifier as the ",
-          "baseline (see route_key=)"
+          "; check that the route_ref of 'events'/'headway_groups' uses the ",
+          "same identifier as the baseline (see route_key=)"
         )
       } else {
         ""
@@ -473,11 +593,14 @@ rt2s_frequencies <- function(
   grp <- grp[!is.na(has_pattern)]
   if (nrow(grp) == 0L) {
     stop(
-      "No (route, direction, window) group with a headway has a ",
+      "No candidate headway group has a ",
       if (anchored) "baseline" else "served",
       " stop pattern, so no trip can be built and the feed would be empty.",
       if (anchored) {
-        " Check the route/direction identity shared by 'events' and 'baseline'."
+        paste0(
+          " Check the route/direction identity shared by ",
+          "'events'/'headway_groups' and 'baseline'."
+        )
       } else {
         paste0(
           " Supply 'events' with served stops for the routes that have ",
@@ -497,15 +620,15 @@ rt2s_frequencies <- function(
     message(
       "[INFO] ",
       nrow(unobserved),
-      " baseline route-direction(s) have no observed headway in any window ",
-      "and are not emitted."
+      " baseline route-direction(s) are in no candidate headway group in any ",
+      "window and are not emitted."
     )
   }
 
   # Ratios resolved once, over the whole (trip x scenario) grid, *before* the
-  # scenario loop. That placement is what enforces the shared trip set: a cell
-  # missing a ratio for one scenario has to leave every scenario, which cannot
-  # be decided from inside build_scenario().
+  # scenario loop. That placement is what enforces the shared trip set: a
+  # headway group missing a ratio for one scenario has to leave every scenario,
+  # which cannot be decided from inside build_scenario().
   resolved <- if (anchored) {
     resolve_trip_ratios(grp, scaling, scen, windows, scaling_missing)
   } else {
@@ -518,13 +641,34 @@ rt2s_frequencies <- function(
     grp <- grp[trip_id %in% keep]
     if (nrow(grp) == 0L) {
       stop(
-        "'scaling' covers none of the (route, direction, window) groups that ",
-        "have an observed headway, so the feed would be empty.",
+        "'scaling' covers none of the candidate headway groups, so the feed ",
+        "would be empty.",
         call. = FALSE
       )
     }
   }
   headways <- check_headway_overrides(headways, grp, scen)
+
+  # Headways resolved here for the same reason ratios are: a headway group with
+  # no resolvable headway in one scenario has to leave *every* scenario, so the
+  # generated trip set stays shared. It is a drop rather than a trip emitted
+  # without a frequencies.txt row, because such a trip would be read as
+  # exact-time and would advertise a departure at 00:00:00 that never runs.
+  resolved_hw <- resolve_trip_headways(grp, headways, scen)
+  trip_headways <- resolved_hw$headways
+  dropped_no_headway <- resolved_hw$dropped
+  if (length(dropped_no_headway) > 0L) {
+    grp <- grp[!trip_id %in% dropped_no_headway]
+    if (nrow(grp) == 0L) {
+      stop(
+        "No candidate headway group has a resolvable headway, so the feed ",
+        "would be empty. Supply one per (route, direction, window, scenario) ",
+        "through 'headways', or carry service that is not a repeating headway ",
+        "through 'extra_trips'.",
+        call. = FALSE
+      )
+    }
+  }
 
   # --- surrounding files + publish gate (emit warnings once) ----------------
   # In baseline mode the planned feed is the natural source for the files that
@@ -552,7 +696,7 @@ rt2s_frequencies <- function(
   ]))
   route_ids <- unique(as.character(grp$route_id))
 
-  # Extra trips are not grid cells, but they are rows of the emitted feed, so
+  # Extra trips are not headway groups, but they are rows of the emitted feed, so
   # they have to widen the two derivations that are *filtered* to the frequency
   # material: build_stops_table() keeps only 'stop_ids', and routes.txt is built
   # from the observed route set. Without this their stops silently vanish from
@@ -560,7 +704,7 @@ rt2s_frequencies <- function(
   if (!is.null(extra)) {
     check_extra_trips_refs(
       extra,
-      generated_trip_ids = as.character(cells$trip_id),
+      generated_trip_ids = as.character(candidate_groups$trip_id),
       pattern_stop_ids = stop_ids,
       known_stop_ids = if (is.null(stops)) {
         character()
@@ -605,27 +749,18 @@ rt2s_frequencies <- function(
   )])
   data.table::setorderv(trips_out, c("route_id", "service_id", "trip_id"))
 
-  wd <- unique(as.POSIXlt(dt$service_date)$wday) # 0 = Sun .. 6 = Sat
-  day_flag <- function(target) as.integer(target %in% wd)
-  calendar <- data.table::data.table(
-    service_id = service_id,
-    monday = day_flag(1),
-    tuesday = day_flag(2),
-    wednesday = day_flag(3),
-    thursday = day_flag(4),
-    friday = day_flag(5),
-    saturday = day_flag(6),
-    sunday = day_flag(0),
-    start_date = yyyymmdd(min(dt$service_date)),
-    end_date = yyyymmdd(max(dt$service_date))
-  )
+  # One resolved date set drives calendar.txt, calendar_dates.txt and
+  # feed_info's span, so the three cannot disagree about what the feed covers.
+  dates <- resolve_service_dates(service_dates, dt, n_supplied_new)
+  calendar <- build_calendar(dates, service_id)
+  calendar_dates <- build_calendar_dates(dates, service_id)
 
   feed_info <- data.table::data.table(
     feed_publisher_name = ag$name,
     feed_publisher_url = ag$url,
     feed_lang = feed_lang,
-    feed_start_date = yyyymmdd(min(dt$service_date)),
-    feed_end_date = yyyymmdd(max(dt$service_date))
+    feed_start_date = yyyymmdd(min(dates)),
+    feed_end_date = yyyymmdd(max(dates))
   )
   if (!is.null(feed_contact_email)) {
     feed_info[, feed_contact_email := as.character(feed_contact_email)]
@@ -643,7 +778,7 @@ rt2s_frequencies <- function(
 
   # --- one feed per scenario ------------------------------------------------
   build_scenario <- function(s) {
-    headway_col <- paste0("headway_", s)
+    hw_s <- trip_headways[scenario == s]
 
     # Two render branches, kept separate on purpose. The observed branch runs
     # the monotone pass once per (route, direction) and fans the result out to
@@ -666,14 +801,20 @@ rt2s_frequencies <- function(
     )]
     data.table::setorderv(stop_times, c("trip_id", "stop_sequence"))
 
+    # Looked up rather than merged so frequencies.txt keeps the headway-group
+    # row order, which a merge on trip_id would silently re-sort.
     freq <- grp[, list(
       trip_id,
       start_time = win_start[window],
       end_time = win_end[window],
-      headway_secs = as.integer(get(headway_col)),
+      headway_secs = hw_s$headway_secs[match(
+        as.character(trip_id),
+        hw_s$trip_id
+      )],
       exact_times = as.integer(exact_times)
     )]
-    freq <- apply_headway_overrides(freq, headways, s)
+    # Every surviving group resolved a positive headway above; this is the
+    # backstop that keeps a non-positive value out of frequencies.txt.
     freq <- freq[!is.na(headway_secs) & headway_secs > 0L]
 
     trips_emitted <- trips_out[trip_id %in% unique(stop_times$trip_id)]
@@ -681,7 +822,7 @@ rt2s_frequencies <- function(
     # Extra trips join trips.txt and stop_times.txt only. They deliberately get
     # no frequencies.txt row - that is what makes them exact-time trips - and
     # they are appended after 'built' is derived below, because they are not
-    # grid cells and must not appear in the resolved grid.
+    # headway groups and must not appear in the resolved grid.
     trips_final <- trips_emitted
     stop_times_final <- stop_times
     ex <- extra[[s]]
@@ -702,14 +843,15 @@ rt2s_frequencies <- function(
       calendar = calendar,
       feed_info = feed_info
     )
+    # Only attached when the resolved dates actually have gaps, so a feed whose
+    # span is contiguous emits no calendar_dates.txt at all. as_gtfs_object() is
+    # gtfsio::new_gtfs(), so an extra table needs no further plumbing.
+    if (nrow(calendar_dates) > 0L) {
+      feed$calendar_dates <- calendar_dates
+    }
     # What this scenario actually wrote, read back off the emitted tables rather
     # than predicted from the inputs: the grid is only worth reconciling against
     # if it reports the output, not the intent.
-    overridden <- if (is.null(headways)) {
-      character()
-    } else {
-      as.character(headways[scenario == s, trip_id])
-    }
     built <- data.table::data.table(
       trip_id = as.character(trips_emitted$trip_id),
       scenario = s
@@ -720,28 +862,129 @@ rt2s_frequencies <- function(
       by = "trip_id",
       all.x = TRUE
     )
-    built[, headway_source := data.table::fifelse(
-      is.na(headway_secs),
-      NA_character_,
-      data.table::fifelse(trip_id %in% overridden, "override", "observed")
-    )]
+    built[, headway_source := NA_character_]
+    built[
+      hw_s,
+      headway_source := i.headway_source,
+      on = "trip_id"
+    ]
+    built[is.na(headway_secs), headway_source := NA_character_]
     list(feed = stamp_publishable(as_gtfs_object(feed), blockers), built = built)
   }
 
   out <- stats::setNames(lapply(scen, build_scenario), scen)
   grid <- resolved_grid(
-    cells = cells,
+    groups = candidate_groups,
     scen = scen,
     ratios = ratios,
     built = data.table::rbindlist(lapply(out, `[[`, "built")),
     dropped = list(
       no_stop_pattern = dropped_no_pattern,
-      no_ratio = dropped_no_ratio
+      no_ratio = dropped_no_ratio,
+      no_headway = dropped_no_headway
     )
   )
   out <- lapply(out, `[[`, "feed")
   attr(out, "resolved_grid") <- grid
   out
+}
+
+#' Empty headway grid with the canonical columns
+#'
+#' What headways_by_trip_start() would have returned had it been called. With
+#' `events = NULL` there is nothing to summarise, so the supplied headway groups
+#' are unioned onto this shell instead of onto a real result.
+#' @noRd
+empty_headway_grid <- function(scen) {
+  out <- data.table::data.table(
+    route_ref = character(),
+    direction_id = integer(),
+    window = character()
+  )
+  for (s in scen) {
+    out[, (paste0("headway_", s)) := integer()]
+  }
+  out[, n_headways := integer()]
+  out[]
+}
+
+#' Resolve the service dates the feed describes
+#'
+#' `service_dates` wins where given; otherwise the observed dates, reduced the
+#' same way they always were. With neither there is nothing to write a calendar
+#' from, which is an error rather than an invented span.
+#' @noRd
+resolve_service_dates <- function(service_dates, dt, n_supplied_new) {
+  if (!is.null(service_dates)) {
+    dates <- suppressWarnings(as.Date(service_dates))
+    if (length(dates) == 0L || anyNA(dates)) {
+      stop(
+        "'service_dates' must be a non-empty vector of dates with no missing ",
+        "values.",
+        call. = FALSE
+      )
+    }
+    return(sort(unique(dates)))
+  }
+  if (is.null(dt)) {
+    stop(
+      "No 'service_dates' were given and 'events' is NULL, so the feed has no ",
+      "service span. Pass service_dates=, e.g. from ",
+      "rt2s_baseline_service_dates().",
+      call. = FALSE
+    )
+  }
+  # The supplied groups may describe service that the observations never saw, so
+  # a span derived from the observations can understate what the feed asserts.
+  if (n_supplied_new > 0L) {
+    warning(
+      "'headway_groups' added ",
+      n_supplied_new,
+      " headway group(s) that 'events' does not cover, but the calendar span ",
+      "still comes from 'events'. Pass 'service_dates' to state the span the ",
+      "feed actually describes.",
+      call. = FALSE
+    )
+  }
+  sort(unique(as.Date(dt$service_date)))
+}
+
+#' calendar.txt for the single synthesized service
+#' @noRd
+build_calendar <- function(dates, service_id) {
+  wd <- unique(as.POSIXlt(dates)$wday) # 0 = Sun .. 6 = Sat
+  day_flag <- function(target) as.integer(target %in% wd)
+  data.table::data.table(
+    service_id = service_id,
+    monday = day_flag(1),
+    tuesday = day_flag(2),
+    wednesday = day_flag(3),
+    thursday = day_flag(4),
+    friday = day_flag(5),
+    saturday = day_flag(6),
+    sunday = day_flag(0),
+    start_date = yyyymmdd(min(dates)),
+    end_date = yyyymmdd(max(dates))
+  )
+}
+
+#' calendar_dates.txt removing the days inside the span that are not served
+#'
+#' calendar.txt can only say "these weekdays, between these two dates", so a
+#' resolved date set with a hole in it - a strike day, a date whose file is
+#' missing - would be overstated as service that ran. Each such date gets an
+#' `exception_type = 2` row. A contiguous date set produces no rows at all, and
+#' the caller then writes no calendar_dates.txt.
+#' @noRd
+build_calendar_dates <- function(dates, service_id) {
+  span <- seq(min(dates), max(dates), by = "day")
+  served_wday <- unique(as.POSIXlt(dates)$wday)
+  gaps <- span[as.POSIXlt(span)$wday %in% served_wday & !span %in% dates]
+  data.table::data.table(
+    service_id = if (length(gaps) == 0L) character() else service_id,
+    date = yyyymmdd(gaps),
+    exception_type = rep(2L, length(gaps))
+  )
 }
 
 #' Validate the optional per-scenario extra-trip tables (shape and values)
@@ -758,7 +1001,8 @@ rt2s_frequencies <- function(
 #' @return A named list, one element per scenario that actually contributes
 #'   trips, each \code{list(trips=, stop_times=)} with canonical columns and
 #'   types. Scenarios that supply nothing are absent from the result: the number
-#'   of extra trips per cell genuinely differs by scenario, so "supplied for one"
+#'   of extra trips per headway group genuinely differs by scenario, so
+#'   "supplied for one"
 #'   does not imply "supplied for all".
 #' @noRd
 check_extra_trips <- function(extra_trips, scen, service_id) {
@@ -856,7 +1100,7 @@ check_extra_trips_one <- function(x, s, service_id) {
   if (!is.null(st) && !is.data.frame(st)) {
     stop("'", where, "$stop_times' must be a data.frame.", call. = FALSE)
   }
-  # A scenario that adds nothing is legitimate - a cell expressible as a headway
+  # A scenario that adds nothing is legitimate - a group expressible as a headway
   # in one scenario need not be in another - so an empty pair is not an error.
   if (is.null(trips) || nrow(trips) == 0L) {
     if (!is.null(st) && nrow(st) > 0L) {
@@ -1150,18 +1394,18 @@ check_extra_trips_refs <- function(
   invisible(NULL)
 }
 
-#' Assemble the resolved (cell x scenario) grid
+#' Assemble the resolved (headway group x scenario) grid
 #'
 #' One row per candidate \code{(route_ref, direction_id, window)} times scenario,
-#' carrying what was actually applied and, for the cells that never reached the
+#' carrying what was actually applied and, for the groups that never reached the
 #' feed, why. Built from the candidate snapshot rather than from the surviving
 #' trips so that the row count is invariant across drop stages - which is the
 #' property a caller reconciling a drop funnel is asserting against.
 #' @noRd
-resolved_grid <- function(cells, scen, ratios, built, dropped) {
+resolved_grid <- function(groups, scen, ratios, built, dropped) {
   grid <- merge(
-    cells,
-    data.table::CJ(trip_id = unique(cells$trip_id), scenario = scen, unique = TRUE),
+    groups,
+    data.table::CJ(trip_id = unique(groups$trip_id), scenario = scen, unique = TRUE),
     by = "trip_id",
     allow.cartesian = TRUE
   )
@@ -1170,14 +1414,19 @@ resolved_grid <- function(cells, scen, ratios, built, dropped) {
   grid[, headway_secs := NA_integer_]
   grid[, headway_source := NA_character_]
 
-  # Reasons are assigned in pipeline order, so a cell that would fail more than
-  # one stage reports the first one it hit - the same convention a stage-by-stage
-  # funnel uses, and the one that keeps the stage counts summing to the total.
+  # Reasons are assigned in pipeline order, so a headway group that would fail
+  # more than one stage reports the first one it hit - the same convention a
+  # stage-by-stage funnel uses, and the one that keeps the stage counts summing
+  # to the total.
   grid[, drop_reason := NA_character_]
   grid[trip_id %in% dropped$no_stop_pattern, drop_reason := "no_stop_pattern"]
   grid[
     is.na(drop_reason) & trip_id %in% dropped$no_ratio,
     drop_reason := "no_ratio"
+  ]
+  grid[
+    is.na(drop_reason) & trip_id %in% dropped$no_headway,
+    drop_reason := "no_headway"
   ]
 
   if (!is.null(ratios) && nrow(ratios) > 0L) {
@@ -1215,46 +1464,52 @@ resolved_grid <- function(cells, scen, ratios, built, dropped) {
   grid[]
 }
 
-#' Resolved Cell Grid Behind a Frequency Feed Set
+#' Resolved Headway-Group Grid Behind a Frequency Feed Set
 #'
 #' Returns the resolved \code{(route, direction, window, scenario)} grid that
 #' \code{\link{rt2s_frequencies}} built from: what was emitted, what was
 #' applied to it, and what was dropped before it reached the feed. This is the
 #' programmatic counterpart to the assembly warnings - a pipeline that
-#' reconciles its own cell accounting against the feed can gate on it instead of
-#' re-deriving the outcome from the written files, which is not always possible.
+#' reconciles its own headway-group accounting against the feed can gate on it
+#' instead of re-deriving the outcome from the written files, which is not always
+#' possible.
 #'
 #' @param feeds The list returned by \code{\link{rt2s_frequencies}}.
-#' @return A data.table with one row per candidate cell and scenario:
+#' @return A data.table with one row per candidate headway group and scenario:
 #'   \describe{
 #'     \item{\code{route_ref}, \code{direction_id}, \code{window},
-#'       \code{scenario}}{The cell, keyed exactly as \code{scaling} and
+#'       \code{scenario}}{The headway group, keyed exactly as \code{scaling} and
 #'       \code{headways} key theirs.}
 #'     \item{\code{trip_id}}{The generated representative trip id, matching
-#'       \code{trips.txt} when the cell was emitted.}
+#'       \code{trips.txt} when the group was emitted.}
 #'     \item{\code{ratio}}{The running-time ratio applied, or \code{NA} under
 #'       \code{pattern_source = "observed"}, where no ratio exists.}
 #'     \item{\code{headway_secs}}{The headway actually written to
-#'       \code{frequencies.txt}, or \code{NA} when no frequency row was written.}
+#'       \code{frequencies.txt}, or \code{NA} when the group was dropped.}
 #'     \item{\code{headway_source}}{\code{"observed"} for a quantile-derived
 #'       headway, \code{"override"} when \code{headways} supplied it,
-#'       \code{NA} when no frequency row was written.}
+#'       \code{NA} when the group was dropped.}
 #'     \item{\code{emitted}}{Whether the trip reached this scenario's
 #'       \code{trips.txt}.}
-#'     \item{\code{drop_reason}}{\code{NA} when emitted, else
-#'       \code{"no_stop_pattern"} (a headway with no served/baseline pattern) or
+#'     \item{\code{drop_reason}}{\code{NA} when emitted, else, in pipeline order,
+#'       \code{"no_stop_pattern"} (no served/baseline stop pattern),
 #'       \code{"no_ratio"} (removed from every scenario under
-#'       \code{scaling_missing = "drop"}).}
+#'       \code{scaling_missing = "drop"}) or \code{"no_headway"} (no observed
+#'       quantile and no \code{headways} override, likewise removed from every
+#'       scenario).}
 #'   }
-#'   A cell may be emitted with \code{headway_secs = NA}: the representative trip
-#'   and its stop_times are written, but no \code{frequencies.txt} row is, because
-#'   the group's headway quantile was missing or non-positive. That row is not a
-#'   drop and is deliberately not given a \code{drop_reason}.
+#'   \code{"no_headway"} is a drop rather than a trip emitted without a
+#'   \code{frequencies.txt} row. Per GTFS a trip absent from
+#'   \code{frequencies.txt} is read as exact-time, so emitting one whose
+#'   \code{stop_times} are offsets from \code{00:00:00} would advertise a
+#'   departure at midnight that never runs. Service that cannot be written as a
+#'   repeating headway belongs in \code{rt2s_frequencies(extra_trips=)}. An
+#'   emitted row therefore always carries a positive \code{headway_secs}.
 #' @examples
 #' \dontrun{
 #' feeds <- rt2s_frequencies(events, windows = win)
 #' grid <- rt2s_resolved_grid(feeds)
-#' # every candidate cell is accounted for, in every scenario
+#' # every candidate headway group is accounted for, in every scenario
 #' table(grid$scenario, grid$drop_reason, useNA = "ifany")
 #' }
 #' @export
@@ -1307,7 +1562,7 @@ render_pattern_observed <- function(tt, grp, travel_col) {
 #'
 #' The scaling is resolved **per distinct (route, direction, ratio)**, not per
 #' trip: trips that share a pattern and a ratio have byte-identical offsets, and
-#' real grids carry far more trip-scenario cells than distinct pattern-ratio
+#' real grids carry far more trip-scenario pairs than distinct pattern-ratio
 #' pairs. Deduplicating here keeps the monotone pass proportional to the
 #' patterns rather than to the emitted rows, which matters for callers whose
 #' upstream grids are large enough to be memory-bound.

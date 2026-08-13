@@ -717,6 +717,45 @@ make_scaling <- function(
   grid
 }
 
+#' Candidate headway groups for rt2s_frequencies(headway_groups=).
+#'
+#' Keyed the way the argument is: one row per (route, direction, window), with
+#' no `scenario` column, because candidacy is a property of the group.
+make_headway_groups <- function(
+  route_ref = "R1",
+  direction_id = 0L,
+  window = "am_peak"
+) {
+  expand.grid(
+    route_ref = route_ref,
+    direction_id = direction_id,
+    window = window,
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Long per-headway-group override table for rt2s_frequencies(headways=).
+#'
+#' The counterpart of make_scaling(): same four-key, `headway_secs` recycled
+#' across the scenarios given.
+make_headway_overrides <- function(
+  scenarios,
+  headway_secs,
+  route_ref = "R1",
+  direction_id = 0L,
+  window = "am_peak"
+) {
+  grid <- expand.grid(
+    route_ref = route_ref,
+    direction_id = direction_id,
+    window = window,
+    scenario = scenarios,
+    stringsAsFactors = FALSE
+  )
+  grid$headway_secs <- rep_len(as.integer(headway_secs), nrow(grid))
+  grid
+}
+
 # --- extra (individually-timed) trip fixtures --------------------------------
 # Shaped exactly as rt2s_frequencies(extra_trips=) takes them: trips plus
 # stop_times carrying ABSOLUTE clock times, and no frequencies row anywhere.

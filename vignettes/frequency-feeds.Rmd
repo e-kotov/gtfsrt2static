@@ -168,15 +168,15 @@ pattern carries its own travel-time quantile and no ratio exists);
 `headway_secs` is the headway actually written to `frequencies.txt` and
 `headway_source` says whether it came from the observations or from a
 `headways=` override; `emitted` is whether the trip reached that scenario's
-`trips.txt`; and `drop_reason` explains the cells that did not.
+`trips.txt`; and `drop_reason` explains the groups that did not.
 
-This exists so a pipeline can reconcile its own cell accounting against the
-feed. The grid is built from the candidate set captured **before** any drop
-stage runs, so its row count does not change as cells fall out — which is what
-makes a stage-by-stage funnel check possible:
+This exists so a pipeline can reconcile its own accounting against the feed. The
+grid is built from the candidate set captured **before** any drop stage runs, so
+its row count does not change as groups fall out — which is what makes a
+stage-by-stage funnel check possible:
 
 ```{r grid-funnel}
-# every candidate cell is accounted for, in every scenario
+# every candidate headway group is accounted for, in every scenario
 table(grid$scenario, grid$drop_reason, useNA = "ifany")
 
 # and the emitted rows match what was actually written -- these feeds were built
@@ -188,29 +188,31 @@ identical(
 ```
 
 That last identity holds **because no `extra_trips` were passed**. The grid has
-one row per candidate `(route, direction, window)` cell, and individually-timed
-trips are not cells; if you add them, reconcile against
+one row per candidate `(route, direction, window)` headway group, and
+individually-timed trips are not groups; if you add them, reconcile against
 `c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)` instead. The next
 section shows that.
 
-A cell is dropped for one of two reasons. `"no_stop_pattern"` means the group
-had a headway but no served (or, when anchoring, no baseline) stop pattern.
-`"no_ratio"` means `scaling_missing = "drop"` removed it — from *every*
-scenario, so the feeds keep one shared trip set (see the anchored section
-below).
+A headway group is dropped for one of three reasons, reported in pipeline
+order. `"no_stop_pattern"` means it had no served (or, when anchoring, no
+baseline) stop pattern. `"no_ratio"` means `scaling_missing = "drop"` removed it.
+`"no_headway"` means no headway could be resolved for it — no observed quantile
+and no `headways=` override. The last two remove it from *every* scenario, so the
+feeds keep one shared trip set (see the anchored section below).
 
-One case is deliberately **not** a drop: a cell can be `emitted` with
-`headway_secs = NA`. The representative trip and its `stop_times` were written,
-but no `frequencies.txt` row was, because that group's headway quantile was
-missing or non-positive. Such a row carries no `drop_reason`, so do not infer
-"emitted" from "has a headway".
+`"no_headway"` is a drop rather than a trip written without a `frequencies.txt`
+row, and that matters: per GTFS a trip absent from `frequencies.txt` is read as
+exact-time, so emitting one whose `stop_times` are offsets from `00:00:00` would
+advertise a departure at midnight that never runs. An emitted row therefore
+always carries a positive `headway_secs`. Service that cannot be written as a
+repeating headway belongs in `extra_trips=`, below.
 
 ## Mixing in individually-timed trips
 
-Real service is not purely frequency-based. Some cells cannot honestly be
-written as one representative trip plus a repeating headway — an hour with three
-irregular departures, a peak extra, a cell whose evidence is a handful of exact
-passages rather than a rhythm. GTFS handles this directly: **only trips listed in
+Real service is not purely frequency-based. Some headway groups cannot honestly
+be written as one representative trip plus a repeating headway — an hour with
+three irregular departures, a peak extra, a group whose evidence is a handful of
+exact passages rather than a rhythm. GTFS handles this directly: **only trips listed in
 `frequencies.txt` are frequency-based**, and every other trip is read from
 `stop_times` as exact scheduled times. A feed may contain both.
 
@@ -275,8 +277,9 @@ Three properties worth knowing:
   draw it from observed passages — so requiring matching id sets would reject
   correct data. The shared-trip-set guarantee stays scoped to the *generated*
   frequency trips, where `scaling_missing` enforces it.
-- **They are not rows of `rt2s_resolved_grid()`.** The grid is one row per candidate
-  cell; extra trips are not cells, and adding them would produce rows whose
+- **They are not rows of `rt2s_resolved_grid()`.** The grid is one row per
+  candidate headway group; extra trips are not groups, and adding them would
+  produce rows whose
   `route_ref`, `window`, `ratio`, `headway_secs` and `drop_reason` are all `NA`.
   Since you supplied the trips, you already own their ids, so the funnel still
   closes:
@@ -410,26 +413,93 @@ feeds <- rt2s_frequencies(
 
 Three things to know about this mode:
 
-- **`events` is still required.** Only the pattern source changes; headways, the
-  calendar's weekdays and the feed's date range still come from the observations.
+- **`events` is optional here.** Only the pattern source changes, so by default
+  headways, the calendar's weekdays and the feed's date range still come from
+  the observations — but see the next section, which drives candidacy from the
+  baseline instead.
 - **The travel side of `quantiles` is inert.** The pattern is the published one
   scaled by `ratio`, so `rt2s_obs_travel_times()` is never called. `quantiles` still
   defines *which* scenarios exist — it stays the single source of scenario
   identity, and `scaling`/`headways` may only refer to its names.
 - **The trip set is shared by construction.** Ratios are resolved for the whole
-  (trip × scenario) grid before any feed is built, so a cell missing a ratio
-  leaves *every* scenario rather than just the one that lacks it. That is what
-  `scaling_missing` controls, and why its default is to error rather than quietly
-  produce feeds you cannot compare. Under `scaling_missing = "drop"` the removed
-  cells stay visible in `rt2s_resolved_grid()` with `drop_reason = "no_ratio"`, so a
-  drop is something you can audit rather than something you have to notice.
+  (trip × scenario) grid before any feed is built, so a headway group missing a
+  ratio leaves *every* scenario rather than just the one that lacks it. That is
+  what `scaling_missing` controls, and why its default is to error rather than
+  quietly produce feeds you cannot compare. Headways are resolved in the same
+  place and for the same reason. Under `scaling_missing = "drop"` the removed
+  groups stay visible in `rt2s_resolved_grid()` with `drop_reason = "no_ratio"`,
+  so a drop is something you can audit rather than something you have to notice.
 
-The identity contract is the thing to get right: `events$route_ref` must carry the
-same identifier as the baseline's `trips.route_id` (or `routes.route_short_name`,
-via `route_key`), and `direction_id` must agree. A completely disjoint key set is
-an error naming examples from both sides.
+The identity contract is the thing to get right: the `route_ref` of `events` and
+of `headway_groups` must carry the same identifier as the baseline's
+`trips.route_id` (or `routes.route_short_name`, via `route_key`), and
+`direction_id` must agree. A completely disjoint key set is an error naming
+examples from both sides.
 
 One incidental advantage: a route that visits the same stop twice (a loop, or a
 branch that doubles back) is handled correctly here, because the pattern is a
 literal published trip. The reconstructing path collapses repeated visits into one
 position and warns about it.
+
+## Driving candidacy from the baseline, not from the observations
+
+There is one more gate in the anchored mode above, and it is easy to miss:
+the candidate `(route, direction, window)` **headway groups** are still derived
+from `events`. A group with no observed runs is not a candidate, so it is absent
+from `rt2s_resolved_grid()` entirely rather than present with a `drop_reason` —
+and the feed is quietly smaller than the network it claims to describe.
+
+That is the wrong gate for an anchored feed. The pattern comes from `baseline`,
+the ratio from `scaling`, the headway from `headways`; `events` contributes
+nothing to such a group's output. It is a real regime, not a corner case: a
+pipeline may estimate a per-group headway and running-time ratio from round-trip
+spans for its whole network while producing package-format stop events for only a
+handful of lines.
+
+`headway_groups=` names the candidates directly. It takes the `scaling`/`headways`
+key **minus `scenario`**, because candidacy is a property of the group and not of
+the scenario, and candidacy becomes the events-derived groups *union* the ones you
+supply:
+
+```{r headway-groups, eval = FALSE}
+groups <- unique(ratios[, c("route_ref", "direction_id", "window")])
+
+feeds <- rt2s_frequencies(
+  events = NULL,                       # no observations at all
+  windows = windows,
+  quantiles = list(scheduled = c(headway = 0.50), median = c(headway = 0.50)),
+  baseline = static,
+  pattern_source = "baseline",
+  service_dates = rt2s_baseline_service_dates(static, "WEEKDAY"),
+  scaling = ratios,
+  headways = sched,
+  headway_groups = groups
+)
+```
+
+Four things this changes:
+
+- **`events` may be `NULL`.** No headway analytics run at all, so *every* headway
+  must come from `headways=`. `events = NULL` without `headway_groups=` is an
+  error — there would be nothing to build from.
+- **The service span needs a source.** `calendar.txt` is normally derived from
+  `events$service_date`, which no longer exists. `service_dates=` supplies it.
+  `rt2s_baseline_service_dates()` expands one of the baseline's own services into
+  a `Date` vector, honouring `calendar.txt` *and* `calendar_dates.txt`
+  exceptions. It is a separate, explicit call on purpose: the assembler never
+  silently inherits `baseline$calendar`, because a planned calendar describes
+  planned service while the emitted feed describes what you are asserting.
+- **A supplied group with no baseline pattern is not an error.** It warns and
+  appears in the grid with `drop_reason = "no_stop_pattern"`, which is exactly
+  the visibility this argument exists to restore.
+- **`headway_groups=` is baseline-only.** Under `pattern_source = "observed"` it
+  is an error, because an observed pattern can only be reconstructed for a group
+  that has events.
+
+`service_dates=` is worth passing even when you do have events. A span reduced to
+weekday flags plus a first and last date cannot express a hole, so a working set
+of daily files with two days missing would otherwise claim service on those two
+days. Any date inside `[min, max]` whose weekday *is* served but which is absent
+from `service_dates` is written to `calendar_dates.txt` with
+`exception_type = 2`; a date set with no holes emits no `calendar_dates.txt` at
+all.

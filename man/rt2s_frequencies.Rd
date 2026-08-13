@@ -5,13 +5,14 @@
 \title{Assemble Frequency-Based Realized GTFS Feeds (One per Reliability Quantile)}
 \usage{
 rt2s_frequencies(
-  events,
+  events = NULL,
   windows,
   quantiles = c(structural = 0.05, median = 0.5, reliable = 0.95),
   agency = NULL,
   stops = NULL,
   route_type = 3L,
   service_id = "SVC1",
+  service_dates = NULL,
   exact_times = 0L,
   feed_lang = "en",
   feed_contact_email = NULL,
@@ -26,6 +27,7 @@ rt2s_frequencies(
   scaling = NULL,
   scaling_missing = c("error", "drop"),
   headways = NULL,
+  headway_groups = NULL,
   route_key = c("route_id", "route_short_name"),
   extra_trips = NULL
 )
@@ -33,7 +35,12 @@ rt2s_frequencies(
 \arguments{
 \item{events}{Observed stop events (see \link{observed-stop-events}).
 Restrict them to the service dates that form one service pattern before
-calling (e.g. weekdays only) - no day-type filtering is imposed here.}
+calling (e.g. weekdays only) - no day-type filtering is imposed here.
+
+May be \code{NULL} when \code{headway_groups} is supplied, in which case no
+headway analytics run at all and every headway must come from
+\code{headways}. \code{NULL} without \code{headway_groups} is an error:
+there would be no candidate headway group.}
 
 \item{windows}{Named list of \code{c(start, end)} time strings defining the
 frequency windows, passed to \code{\link{rt2s_time_window}} (overnight windows
@@ -69,8 +76,25 @@ agency or stop coordinates are recorded as publish blockers on every
 returned feed (or error under \code{strict}).}
 
 \item{service_id}{Identifier for the single synthesized service; its
-\code{calendar.txt} row is active on the weekdays present in \code{events}
-over the observed date range. Default \code{"SVC1"}.}
+\code{calendar.txt} row is active on the weekdays present in the resolved
+service dates, over their range. Default \code{"SVC1"}.}
+
+\item{service_dates}{Optional \code{Date} vector giving the days this feed
+describes. It replaces the dates that would otherwise be read from
+\code{events$service_date}, and is reduced by the same rule: weekday flags
+plus the minimum and maximum date. Required when \code{events} is
+\code{NULL}; \code{\link{rt2s_baseline_service_dates}} is the way to inherit
+the baseline's own days.
+
+Dates inside \code{[min, max]} whose weekday \emph{is} served but which are
+absent from this vector are written to \code{calendar_dates.txt} with
+\code{exception_type = 2}, so a span with holes in it is not overstated as
+uninterrupted service. A date set with no holes emits no
+\code{calendar_dates.txt} at all.
+
+Supplying \code{headway_groups} without \code{service_dates} warns when the
+supplied groups widen the feed past what \code{events} covers: the calendar
+then still describes only the observed span.}
 
 \item{exact_times}{\code{frequencies.exact_times}: \code{0} (default,
 frequency-based) or \code{1} (schedule-based).}
@@ -110,13 +134,13 @@ scaffold default. \code{calendar} and \code{shapes} are deliberately
 describes the observed span, and the representative trips reference no
 baseline shape.
 
-\strong{Identity contract:} \code{events$route_ref} must carry the same
-identifier as the baseline's \code{trips.route_id} (or
-\code{routes.route_short_name} under \code{route_key}), and
-\code{direction_id} must agree. A completely disjoint key set is an error;
-observed keys with no baseline pattern are dropped with a warning, and
-baseline routes with no observed headway are reported and skipped rather
-than given an invented headway.}
+\strong{Identity contract:} the \code{route_ref} of \code{events} and of
+\code{headway_groups} must carry the same identifier as the baseline's
+\code{trips.route_id} (or \code{routes.route_short_name} under
+\code{route_key}), and \code{direction_id} must agree. A completely disjoint
+key set is an error; candidate keys with no baseline pattern are dropped
+with a warning, and baseline routes that are in no candidate headway group
+are reported and skipped rather than given an invented headway.}
 
 \item{pattern_source}{Where the representative stop pattern comes from.
 \code{"observed"} (default) reconstructs it from \code{events} via
@@ -135,19 +159,44 @@ plausibility bounds belong to whatever estimated them. \code{scenario}
 values must be names of \code{quantiles}.}
 
 \item{scaling_missing}{What to do when \code{scaling} has no ratio for an
-emitted \code{(route, direction, window, scenario)} cell. \code{"error"}
-(default) reports the offending cells. \code{"drop"} removes those trips
-from \strong{every} scenario, with a warning - never from just the scenario
-that lacks a ratio, which would leave the feeds with different trip sets.}
+emitted headway group/scenario pair. \code{"error"} (default) reports the
+offending pairs. \code{"drop"} removes
+those trips from \strong{every} scenario, with a warning - never from just
+the scenario that lacks a ratio, which would leave the feeds with different
+trip sets.}
 
-\item{headways}{Optional per-cell headway override: a data.frame keyed
+\item{headways}{Optional per-group headway override: a data.frame keyed
 \code{route_ref}, \code{direction_id}, \code{window}, \code{scenario} with a
 positive \code{headway_secs}. It supersedes the quantile-derived headway for
-exactly the cells it lists; unlisted cells keep their observed value. This
-is how a scenario whose frequency does not come from observations at all -
-a planned "scheduled" feed, via \code{\link{rt2s_baseline_headways}} - is
-expressed without a second way of naming scenarios. Rows naming a cell that
-is not emitted are ignored with a warning.}
+exactly the headway groups it lists; unlisted groups keep their observed
+value. This is how a scenario whose frequency does not come from
+observations at all - a planned "scheduled" feed, via
+\code{\link{rt2s_baseline_headways}} - is expressed without a second way of
+naming scenarios. Rows naming a headway group that is not emitted are
+ignored with a warning.
+
+A group with \strong{no} resolvable headway in some scenario - no observed
+quantile and no override - is dropped from \strong{every} scenario with
+\code{drop_reason = "no_headway"}, exactly as
+\code{scaling_missing = "drop"} behaves and for the same shared-trip-set
+reason. Use \code{extra_trips} to carry service that cannot be written as a
+repeating headway.}
+
+\item{headway_groups}{Optional candidate headway groups, supplied rather than
+derived: a data.frame keyed \code{route_ref}, \code{direction_id},
+\code{window} - the \code{scaling}/\code{headways} key minus
+\code{scenario}, because candidacy is a property of the group and not of the
+scenario. Valid only with \code{pattern_source = "baseline"}; passing it
+under \code{"observed"} is an error, since an observed pattern can only be
+reconstructed for a group that has events.
+
+Candidacy becomes the events-derived groups \strong{union} these, so a group
+with no observed runs is still emitted when \code{scaling} gives it a ratio
+and \code{headways} gives it a headway. A supplied group with no baseline
+stop pattern is \emph{not} an error: it warns and appears in
+\code{\link{rt2s_resolved_grid}} with
+\code{drop_reason = "no_stop_pattern"}, which is what makes a caller's drop
+funnel able to see it.}
 
 \item{route_key}{Which baseline column supplies route identity, passed to
 \code{\link{rt2s_baseline_patterns}}. Baseline mode only.}
@@ -176,8 +225,10 @@ These trips get \strong{no \code{frequencies.txt} row}. That is what makes
 them exact-time trips: per the GTFS specification only trips listed in
 \code{frequencies.txt} are frequency-based, and the rest are read from
 \code{stop_times} as scheduled times. A feed may mix the two, so this is a
-standard-compliant feed, not a workaround - it is how a cell that cannot be
-expressed as a repeating headway is carried.
+standard-compliant feed, not a workaround - it is how a headway group that
+cannot be expressed as a repeating headway is carried. Since a group with no
+resolvable headway is now a drop, this is the \strong{only} way to carry
+such service.
 
 Their stops and routes are added to \code{stops.txt} and \code{routes.txt},
 but every referenced \code{stop_id} must already be known (from \code{stops}
@@ -188,13 +239,14 @@ rather than filled in. No extra \code{trip_id} may collide with a generated
 
 \strong{No cross-scenario invariant is imposed.} A scenario may supply more,
 fewer or no extra trips than another, because the exact-time evidence for a
-cell legitimately differs by scenario. The shared-trip-set guarantee below
+headway group legitimately differs by scenario. The shared-trip-set guarantee below
 is scoped to the \emph{generated frequency} trips, which is where
 \code{scaling_missing} enforces it.
 
 Extra trips are \strong{not} rows of \code{\link{rt2s_resolved_grid}}: the grid
-is one row per candidate \code{(route, direction, window)} cell and extra
-trips are not cells. Reconciling a feed's \code{trips.txt} therefore means
+is one row per candidate \code{(route, direction, window)} headway group and
+extra trips are not groups. Reconciling a feed's \code{trips.txt} therefore
+means
 \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
 supplies the extra trips, so it already owns those ids.}
 }
@@ -211,11 +263,11 @@ service levels only. Trips added through \code{extra_trips} are outside that
 guarantee by design and may differ per scenario.
 
 The list carries a \code{resolved_grid} attribute: one row per candidate
-\code{(route, direction, window)} and scenario, recording the ratio and
-headway actually applied and, for cells that never reached the feed, why.
-Read it with \code{\link{rt2s_resolved_grid}}. Cells dropped for want of a stop
-pattern or a ratio are present and flagged rather than absent, so the grid
-reconciles against a caller's own drop accounting.
+\code{(route, direction, window)} headway group and scenario, recording the
+ratio and headway actually applied and, for groups that never reached the
+feed, why. Read it with \code{\link{rt2s_resolved_grid}}. Groups dropped for
+want of a stop pattern, a ratio or a headway are present and flagged rather
+than absent, so the grid reconciles against a caller's own drop accounting.
 }
 \description{
 Collapses many observed runs into compact, frequency-based schedules: one
@@ -253,6 +305,23 @@ pattern instead and vary only service levels: see
 \code{\link{rt2s_baseline_patterns}} and \code{pattern_source = "baseline"}.
 }
 
+\section{Where the candidate headway groups come from}{
+
+A \strong{headway group} is one \code{(route_ref, direction_id, window)} - the
+object \code{frequencies.txt} describes, and what EN 12896 (Transmodel) calls
+a headway journey group. One representative trip is emitted per group.
+
+By default the candidate groups are derived from \code{events}: a group with
+no observed runs is not a candidate. Under
+\code{pattern_source = "baseline"} that is the wrong gate, because the pattern
+comes from \code{baseline}, the ratio from \code{scaling} and the headway from
+\code{headways}, so \code{events} contributes nothing to such a group's output.
+\code{headway_groups} names those groups directly; candidacy then becomes the
+events-derived groups \strong{union} the supplied ones, and \code{events} may
+be \code{NULL} entirely.
+}
+
 \seealso{
-\code{\link{rt2s_resolved_grid}} for the resolved grid.
+\code{\link{rt2s_resolved_grid}} for the resolved grid,
+\code{\link{rt2s_baseline_service_dates}} for \code{service_dates}.
 }

@@ -31,8 +31,8 @@ live endpoints ──rt2s_collect()──► daily .pb ZIPs
 | collect | `rt2s_collect()`, `rt2s_archive_rotate()`, `rt2s_archive_coverage()`, `rt2s_service_template()` | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
 | events | `rt2s_events_from_trip_updates()`, `rt2s_events_from_stop_times()`, `rt2s_events_validate()` | reduce observations to one row per trip × stop × service date, with provenance |
 | summarise | `rt2s_obs_headways()`, `rt2s_obs_travel_times()`, `rt2s_obs_stop_order()`, `rt2s_time_window()` | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
-| baseline | `rt2s_baseline_patterns()`, `rt2s_baseline_headways()` | reduce a *planned* static feed to one canonical stop pattern per route-direction, and to its own scheduled headways |
-| assemble | `rt2s_assemble()`, `rt2s_scaffold()`, `rt2s_frequencies()`, `rt2s_resolved_grid()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed — and read back which cells were emitted, with what, and why the rest were dropped |
+| baseline | `rt2s_baseline_patterns()`, `rt2s_baseline_headways()`, `rt2s_baseline_service_dates()` | reduce a *planned* static feed to one canonical stop pattern per route-direction, to its own scheduled headways, and to the dates a named service runs |
+| assemble | `rt2s_assemble()`, `rt2s_scaffold()`, `rt2s_frequencies()`, `rt2s_resolved_grid()` | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed — and read back which headway groups were emitted, with what, and why the rest were dropped |
 
 ## Quick example
 
@@ -113,12 +113,38 @@ a bare named numeric still applies one probability to both. See
 `vignette("frequency-feeds")` for the identity contract between `events` and the
 baseline.
 
+In this mode the pattern comes from `baseline`, the ratio from `scaling` and the
+headway from `headways`, so `events` contributes nothing to a
+`(route, direction, window)` **headway group**'s output. `headway_groups=` says
+so: it names the candidate groups directly, keyed `route_ref`, `direction_id`,
+`window`, and lets `events` be `NULL` entirely. Without it, a group with no
+observed runs is not a candidate and is absent from `rt2s_resolved_grid()` rather
+than flagged. Pair it with `service_dates=` — the feed still needs a calendar
+span, and `rt2s_baseline_service_dates()` expands one of the baseline's own
+services into a `Date` vector, `calendar_dates.txt` exceptions included.
+
+```r
+feeds <- rt2s_frequencies(
+  events = NULL,
+  windows = windows,
+  quantiles = list(scheduled = c(headway = 0.50), median = c(headway = 0.50)),
+  baseline = static,
+  pattern_source = "baseline",
+  service_dates  = rt2s_baseline_service_dates(static, "WEEKDAY"),
+  scaling  = ratios,
+  headways = sched,
+  headway_groups = unique(ratios[, c("route_ref", "direction_id", "window")])
+)
+```
+
 ### Mixing in individually-timed trips
 
 Real service is not purely frequency-based. Per the GTFS specification only trips
 listed in `frequencies.txt` are frequency-based, and the rest are read from
-`stop_times` as exact scheduled times — so a cell that cannot be written as a
-repeating headway is carried as an ordinary timed trip. `extra_trips=` takes
+`stop_times` as exact scheduled times — so a headway group that cannot be
+written as a repeating headway is carried as an ordinary timed trip. Since a
+group with no resolvable headway is dropped, this is the only way to carry such
+service. `extra_trips=` takes
 those, keyed by scenario, with absolute clock times and no `frequencies.txt` row:
 
 ```r
@@ -132,9 +158,9 @@ feeds <- rt2s_frequencies(
 
 A scenario may supply more, fewer or no extra trips than another: exact-time
 evidence legitimately differs by scenario, so no cross-scenario invariant is
-imposed on them. They are not rows of `rt2s_resolved_grid()` — the grid is one row per
-candidate cell — so reconcile `trips.txt` against the emitted cells plus the ids
-you supplied.
+imposed on them. They are not rows of `rt2s_resolved_grid()` — the grid is one
+row per candidate headway group — so reconcile `trips.txt` against the emitted
+groups plus the ids you supplied.
 
 See `vignette("frequency-feeds")` for the frequency workflow end to end. The
 opt-in validator test exercises representative frequency feeds with the

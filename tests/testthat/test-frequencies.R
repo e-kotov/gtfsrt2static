@@ -1179,3 +1179,410 @@ test_that("extra stop_sequence must be a usable within-trip order", {
   na_seq$stop_times$stop_sequence <- c(1L, NA_integer_, 3L)
   expect_error(extra_feeds(list(median = na_seq)), "non-negative whole number")
 })
+
+# --- FR-7: caller-supplied headway groups ------------------------------------
+# Under pattern_source = "baseline" the pattern comes from the baseline, the
+# ratio from scaling= and the headway from headways=, so events= contributes
+# nothing to a headway group's output. headway_groups= stops it gating candidacy
+# too.
+
+# Baseline-anchored assembly driven entirely by supplied headway groups, with no
+# observations at all.
+supplied_feeds <- function(
+  scenarios = "median",
+  windows = list(am_peak = c("06:00", "09:00")),
+  groups = make_headway_groups(window = names(windows)),
+  ratio = 1,
+  headway_secs = 600L,
+  service_dates = as.Date("2026-07-14"),
+  ...
+) {
+  rt2s_frequencies(
+    events = NULL,
+    windows = windows,
+    quantiles = stats::setNames(rep(0.5, length(scenarios)), scenarios),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    service_dates = service_dates,
+    scaling = make_scaling(scenarios, ratio, window = names(windows)),
+    headways = make_headway_overrides(
+      scenarios,
+      headway_secs,
+      window = names(windows)
+    ),
+    headway_groups = groups,
+    ...
+  )
+}
+
+test_that("a supplied group with no events is emitted (the FR-7 reproducer)", {
+  # The reported reproducer, verbatim: events cover the am window only, while
+  # scaling= and headways= cover both. Before FR-7 the pm group was not a
+  # candidate at all, so it was absent from the grid rather than flagged.
+  windows <- list(am = c("06:00:00", "09:00:00"), pm = c("16:00:00", "19:00:00"))
+  baseline <- list(
+    agency = data.table::data.table(
+      agency_id = "A1", agency_name = "Probe",
+      agency_url = "http://example.com", agency_timezone = "America/Sao_Paulo"
+    ),
+    stops = data.table::data.table(
+      stop_id = c("S1", "S2", "S3"), stop_name = c("S1", "S2", "S3"),
+      stop_lat = c(-22.90, -22.91, -22.92),
+      stop_lon = c(-43.10, -43.11, -43.12)
+    ),
+    routes = data.table::data.table(
+      route_id = "R1", route_short_name = "L1",
+      route_long_name = "Probe line", route_type = 3L
+    ),
+    trips = data.table::data.table(
+      route_id = "R1", service_id = "WD", trip_id = "T1", direction_id = 0L
+    ),
+    stop_times = data.table::data.table(
+      trip_id = "T1",
+      arrival_time = c("07:00:00", "07:10:00", "07:20:00"),
+      departure_time = c("07:00:00", "07:10:00", "07:20:00"),
+      stop_id = c("S1", "S2", "S3"), stop_sequence = 1:3
+    ),
+    calendar = data.table::data.table(
+      service_id = "WD", monday = 1L, tuesday = 1L, wednesday = 1L,
+      thursday = 1L, friday = 1L, saturday = 0L, sunday = 0L,
+      start_date = 20260302L, end_date = 20260331L
+    )
+  )
+  mk <- function(day, starts) {
+    data.table::rbindlist(lapply(seq_along(starts), function(k) {
+      t0 <- as.POSIXct(paste(day, starts[k]), tz = "America/Sao_Paulo")
+      data.table::data.table(
+        trip_ref = paste0("obs_", day, "_", k), route_ref = "L1",
+        shape_ref = NA_character_, direction_id = 0L,
+        service_date = as.Date(day), stop_ref = c("S1", "S2", "S3"),
+        stop_sequence = 1:3, arrival_time = t0 + c(0, 600, 1200),
+        departure_time = t0 + c(0, 600, 1200), provenance = "observed",
+        vehicle_ref = paste0("V", k), source = "gps"
+      )
+    }))
+  }
+  events <- data.table::rbindlist(list(
+    mk("2026-03-02", c("07:00:00", "07:30:00")),
+    mk("2026-03-03", c("07:00:00", "07:30:00"))
+  ))
+  scenarios <- list(scheduled = c(headway = 0.50), median = c(headway = 0.50))
+  key <- data.table::CJ(
+    route_ref = "L1", direction_id = 0L, window = c("am", "pm"),
+    scenario = names(scenarios), sorted = FALSE
+  )
+  groups <- unique(
+    as.data.frame(key)[, c("route_ref", "direction_id", "window")]
+  )
+
+  feeds <- suppressWarnings(rt2s_frequencies(
+    events = events, windows = windows, quantiles = scenarios,
+    baseline = baseline, pattern_source = "baseline",
+    route_key = "route_short_name",
+    service_dates = as.Date(c("2026-03-02", "2026-03-03")),
+    scaling = as.data.frame(data.table::copy(key)[, ratio := 1.0]),
+    headways = as.data.frame(data.table::copy(key)[, headway_secs := 900L]),
+    headway_groups = groups,
+    scaling_missing = "drop"
+  ))
+  grid <- rt2s_resolved_grid(feeds)
+
+  # The pm group is present in the grid and emitted, in both scenarios.
+  expect_identical(sort(unique(grid$window)), c("am", "pm"))
+  expect_identical(nrow(grid), 4L)
+  expect_true(all(grid$emitted))
+  expect_true(all(is.na(grid$drop_reason)))
+  expect_setequal(feeds$median$trips$trip_id, c("L1_0_am", "L1_0_pm"))
+  expect_setequal(feeds$scheduled$trips$trip_id, c("L1_0_am", "L1_0_pm"))
+  # Both windows take the supplied headway, and the pm one is entirely
+  # caller-driven: no observation ever fell in it.
+  expect_identical(sort(feeds$median$frequencies$headway_secs), c(900L, 900L))
+  expect_identical(unique(grid$headway_source), "override")
+})
+
+test_that("a supplied group with a ratio and an override headway needs no events", {
+  feeds <- supplied_feeds()
+  expect_identical(feeds$median$trips$trip_id, "R1_0_am_peak")
+  expect_identical(feeds$median$frequencies$headway_secs, 600L)
+  # the pattern is the baseline's, unchanged at ratio 1
+  st <- feeds$median$stop_times[order(stop_sequence)]
+  expect_identical(clock_secs(st$arrival_time), c(0L, 120L, 270L))
+  expect_identical(st$stop_id, c("S1", "S2", "S3"))
+})
+
+test_that("events = NULL builds a referentially consistent feed", {
+  f <- supplied_feeds()$median
+  expect_s3_class(f, "gtfs")
+  expect_true(all(f$stop_times$stop_id %in% f$stops$stop_id))
+  expect_true(all(f$stop_times$trip_id %in% f$trips$trip_id))
+  expect_true(all(f$frequencies$trip_id %in% f$trips$trip_id))
+  expect_true(all(f$trips$route_id %in% f$routes$route_id))
+  expect_true(all(f$trips$service_id %in% f$calendar$service_id))
+  expect_true(rt2s_publishable(f)$publishable)
+})
+
+test_that("events = NULL without headway_groups is an error", {
+  expect_error(
+    rt2s_frequencies(windows = list(am_peak = c("06:00", "09:00"))),
+    "no candidate headway group"
+  )
+  expect_error(
+    rt2s_frequencies(
+      events = NULL,
+      windows = list(am_peak = c("06:00", "09:00"))
+    ),
+    "no candidate headway group"
+  )
+})
+
+test_that("headway_groups is rejected under pattern_source = \"observed\"", {
+  expect_error(
+    rt2s_frequencies(
+      make_events_clean(),
+      windows = list(am_peak = c("06:00", "09:00")),
+      headway_groups = make_headway_groups()
+    ),
+    "only applies to"
+  )
+})
+
+test_that("a supplied group with no baseline pattern is flagged, not fatal", {
+  groups <- rbind(
+    make_headway_groups(),
+    make_headway_groups(route_ref = "R9")
+  )
+  scaling <- rbind(
+    make_scaling("median", 1),
+    make_scaling("median", 1, route_ref = "R9")
+  )
+  overrides <- rbind(
+    make_headway_overrides("median", 600L),
+    make_headway_overrides("median", 600L, route_ref = "R9")
+  )
+  # Two warnings, in pipeline order: R9 loses its pattern, and its override row
+  # then names a group that is no longer emitted.
+  expect_warning(
+    expect_warning(
+      feeds <- rt2s_frequencies(
+        events = NULL,
+        windows = list(am_peak = c("06:00", "09:00")),
+        quantiles = c(median = 0.5),
+        baseline = make_baseline_freq(),
+        pattern_source = "baseline",
+        service_dates = as.Date("2026-07-14"),
+        scaling = scaling,
+        headways = overrides,
+        headway_groups = groups
+      ),
+      "no baseline stop pattern"
+    ),
+    "not emitted"
+  )
+  grid <- rt2s_resolved_grid(feeds)
+  # R9 is present with a reason rather than absent - the FR-6 invariant.
+  expect_identical(sort(unique(grid$route_ref)), c("R1", "R9"))
+  expect_identical(grid[route_ref == "R9"]$drop_reason, "no_stop_pattern")
+  expect_false(grid[route_ref == "R9"]$emitted)
+  expect_true(grid[route_ref == "R1"]$emitted)
+  expect_false("R9_0_am_peak" %in% feeds$median$trips$trip_id)
+})
+
+test_that("a group with no resolvable headway is dropped, not written at midnight", {
+  # Two windows, an override for 'early' only, and no events to supply an
+  # observed quantile: 'later' has no headway from any source.
+  windows <- two_windows()
+  expect_warning(
+    feeds <- rt2s_frequencies(
+      events = NULL,
+      windows = windows,
+      quantiles = c(median = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      service_dates = as.Date("2026-07-14"),
+      scaling = make_scaling("median", 1, window = names(windows)),
+      headways = make_headway_overrides("median", 600L, window = "early"),
+      headway_groups = make_headway_groups(window = names(windows))
+    ),
+    "no resolvable headway"
+  )
+  grid <- rt2s_resolved_grid(feeds)
+  expect_identical(nrow(grid), 2L)
+  expect_identical(grid[window == "later"]$drop_reason, "no_headway")
+  expect_false(grid[window == "later"]$emitted)
+  expect_true(is.na(grid[window == "later"]$headway_secs))
+
+  # The load-bearing assertion: the dropped group writes no trip at all, so no
+  # frequencies-less trip advertises a phantom 00:00:00 departure.
+  expect_identical(feeds$median$trips$trip_id, "R1_0_early")
+  expect_false("R1_0_later" %in% feeds$median$stop_times$trip_id)
+  expect_setequal(feeds$median$frequencies$trip_id, feeds$median$trips$trip_id)
+  # every emitted row carries a positive headway
+  expect_true(all(grid[emitted == TRUE]$headway_secs > 0L))
+})
+
+test_that("a no_headway drop leaves every scenario, keeping one trip set", {
+  windows <- two_windows()
+  # scenario 'b' has no override for 'later'; 'a' has one for both.
+  overrides <- rbind(
+    make_headway_overrides(c("a", "b"), 600L, window = "early"),
+    make_headway_overrides("a", 900L, window = "later")
+  )
+  expect_warning(
+    feeds <- rt2s_frequencies(
+      events = NULL,
+      windows = windows,
+      quantiles = c(a = 0.5, b = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      service_dates = as.Date("2026-07-14"),
+      scaling = make_scaling(c("a", "b"), 1, window = names(windows)),
+      headways = overrides,
+      headway_groups = make_headway_groups(window = names(windows))
+    ),
+    "dropped from every scenario"
+  )
+  expect_identical(feeds$a$trips$trip_id, "R1_0_early")
+  expect_identical(feeds$b$trips$trip_id, "R1_0_early")
+  grid <- rt2s_resolved_grid(feeds)
+  # row-count invariance holds with supplied groups: 2 groups x 2 scenarios
+  expect_identical(nrow(grid), 4L)
+  expect_identical(unique(grid[window == "later"]$drop_reason), "no_headway")
+  expect_identical(nrow(grid[window == "later"]), 2L)
+})
+
+test_that("no_headway is reported after no_stop_pattern", {
+  # R9 has neither a pattern nor a headway; the first stage it hits wins, which
+  # is what keeps a stage-by-stage funnel's counts summing to the total.
+  groups <- rbind(make_headway_groups(), make_headway_groups(route_ref = "R9"))
+  scaling <- rbind(
+    make_scaling("median", 1),
+    make_scaling("median", 1, route_ref = "R9")
+  )
+  feeds <- suppressWarnings(rt2s_frequencies(
+    events = NULL,
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    service_dates = as.Date("2026-07-14"),
+    scaling = scaling,
+    headways = make_headway_overrides("median", 600L),
+    headway_groups = groups
+  ))
+  grid <- rt2s_resolved_grid(feeds)
+  expect_identical(grid[route_ref == "R9"]$drop_reason, "no_stop_pattern")
+})
+
+test_that("headway_groups is validated on the three-key", {
+  bad <- function(groups, regexp) {
+    expect_error(supplied_feeds(groups = groups), regexp)
+  }
+  bad(make_headway_groups(window = "nope"), "windows' does not define")
+  bad(rbind(make_headway_groups(), make_headway_groups()), "duplicate")
+  bad(make_headway_groups()[0, ], "no rows")
+  bad(make_headway_groups()[, c("route_ref", "window")], "Missing required")
+  bad("R1", "must be a data.frame")
+})
+
+# --- FR-7: the service span --------------------------------------------------
+
+test_that("service_dates drives calendar.txt and overrides events", {
+  feeds <- rt2s_frequencies(
+    make_events_clean(), # a single Tuesday, 2026-07-14
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops(),
+    service_dates = seq(as.Date("2026-03-11"), as.Date("2026-03-13"), by = "day")
+  )
+  cal <- feeds$median$calendar
+  expect_identical(cal$start_date, 20260311L)
+  expect_identical(cal$end_date, 20260313L)
+  # Wed/Thu/Fri from service_dates, not the fixture's Tuesday
+  expect_identical(cal$wednesday, 1L)
+  expect_identical(cal$thursday, 1L)
+  expect_identical(cal$friday, 1L)
+  expect_identical(cal$tuesday, 0L)
+  # feed_info's span comes off the same resolved date set
+  expect_identical(feeds$median$feed_info$feed_start_date, 20260311L)
+  expect_identical(feeds$median$feed_info$feed_end_date, 20260313L)
+  # contiguous dates -> no calendar_dates.txt at all
+  expect_false("calendar_dates" %in% names(feeds$median))
+})
+
+test_that("calendar_dates.txt appears only when the date set has gaps", {
+  span <- seq(as.Date("2026-03-11"), as.Date("2026-03-31"), by = "day")
+  dates <- span[!span %in% as.Date(c("2026-03-18", "2026-03-19"))]
+  gapped <- rt2s_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops(),
+    service_dates = dates
+  )
+  cd <- gapped$median$calendar_dates
+  expect_false(is.null(cd))
+  expect_identical(cd$date, c(20260318L, 20260319L))
+  expect_identical(unique(cd$exception_type), 2L)
+  expect_identical(unique(cd$service_id), "SVC1")
+  # the calendar still spans the whole range, which is what the exceptions carve
+  expect_identical(gapped$median$calendar$start_date, 20260311L)
+  expect_identical(gapped$median$calendar$end_date, 20260331L)
+
+  # the same span with no holes emits nothing
+  clean <- rt2s_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops(),
+    service_dates = span
+  )
+  expect_false("calendar_dates" %in% names(clean$median))
+})
+
+test_that("a date whose weekday is never served is not an exception", {
+  # Weekdays only: calendar.txt's flags already exclude the weekends inside the
+  # span, so writing exceptions for them would be redundant.
+  span <- seq(as.Date("2026-03-09"), as.Date("2026-03-20"), by = "day")
+  weekdays_only <- span[!as.POSIXlt(span)$wday %in% c(0L, 6L)]
+  feeds <- rt2s_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = freq_stops(),
+    service_dates = weekdays_only
+  )
+  expect_identical(feeds$median$calendar$saturday, 0L)
+  expect_false("calendar_dates" %in% names(feeds$median))
+})
+
+test_that("supplied groups that widen the feed past events warn about the span", {
+  # 'evening' has a baseline pattern but no observation, so it is a
+  # supplied-only group and the observed span understates the feed.
+  windows <- c(two_windows(), list(evening = c("20:00", "22:00")))
+  expect_warning(
+    rt2s_frequencies(
+      make_events_clean(),
+      windows = windows,
+      quantiles = c(median = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      scaling = make_scaling("median", 1, window = names(windows)),
+      headways = make_headway_overrides("median", 600L, window = names(windows)),
+      headway_groups = make_headway_groups(window = names(windows))
+    ),
+    "Pass 'service_dates'"
+  )
+})
+
+test_that("service_dates is validated", {
+  bad <- function(dates, regexp) {
+    expect_error(supplied_feeds(service_dates = dates), regexp)
+  }
+  bad(as.Date(character()), "non-empty vector of dates")
+  bad(as.Date(c("2026-07-14", NA)), "non-empty vector of dates")
+  expect_error(supplied_feeds(service_dates = NULL), "no service span")
+})

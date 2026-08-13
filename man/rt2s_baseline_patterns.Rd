@@ -107,5 +107,6 @@ rt2s_baseline_patterns(baseline)
 }
 \seealso{
 \code{\link{rt2s_baseline_headways}} for the planned feed's own headways,
+\code{\link{rt2s_baseline_service_dates}} for its service days,
 \code{\link{rt2s_frequencies}} to assemble feeds from the result.
 }

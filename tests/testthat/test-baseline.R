@@ -209,3 +209,119 @@ test_that("rt2s_baseline_headways errors when nothing falls inside a window", {
   )
   expect_error(rt2s_baseline_headways(make_baseline_freq()), "windows")
 })
+
+# --- FR-7: expanding a baseline service into dates ---------------------------
+
+# calendar.txt only, two services with disjoint weekday flags.
+service_calendar <- function() {
+  list(calendar = data.frame(
+    service_id = c("WD", "SA"),
+    monday = c(1L, 0L), tuesday = c(1L, 0L), wednesday = c(1L, 0L),
+    thursday = c(1L, 0L), friday = c(1L, 0L),
+    saturday = c(0L, 1L), sunday = 0L,
+    start_date = 20260302L, end_date = 20260315L,
+    stringsAsFactors = FALSE
+  ))
+}
+
+test_that("rt2s_baseline_service_dates expands calendar.txt weekday flags", {
+  wd <- rt2s_baseline_service_dates(service_calendar(), "WD")
+  expect_s3_class(wd, "Date")
+  # 2026-03-02 is a Monday; ten weekdays over the two-week span
+  expect_length(wd, 10L)
+  expect_identical(min(wd), as.Date("2026-03-02"))
+  expect_identical(max(wd), as.Date("2026-03-13"))
+  expect_false(any(as.POSIXlt(wd)$wday %in% c(0L, 6L)))
+
+  sa <- rt2s_baseline_service_dates(service_calendar(), "SA")
+  expect_identical(sa, as.Date(c("2026-03-07", "2026-03-14")))
+})
+
+test_that("rt2s_baseline_service_dates honours calendar_dates exceptions", {
+  b <- service_calendar()
+  b$calendar_dates <- data.frame(
+    service_id = "WD",
+    date = c(20260307L, 20260311L),
+    exception_type = c(1L, 2L),
+    stringsAsFactors = FALSE
+  )
+  wd <- rt2s_baseline_service_dates(b, "WD")
+  # the Saturday is added, the Wednesday removed, and the count is unchanged
+  expect_true(as.Date("2026-03-07") %in% wd)
+  expect_false(as.Date("2026-03-11") %in% wd)
+  expect_length(wd, 10L)
+  # exceptions for another service are ignored
+  b$calendar_dates$service_id <- "SA"
+  expect_length(rt2s_baseline_service_dates(b, "WD"), 10L)
+})
+
+test_that("rt2s_baseline_service_dates supports an exception-only service", {
+  b <- list(calendar_dates = data.frame(
+    service_id = "EXTRA",
+    date = c(20260405L, 20260401L),
+    exception_type = 1L,
+    stringsAsFactors = FALSE
+  ))
+  # `$calendar` would partially match `calendar_dates`, so this also pins that
+  # the lookup is exact.
+  expect_identical(
+    rt2s_baseline_service_dates(b, "EXTRA"),
+    as.Date(c("2026-04-01", "2026-04-05"))
+  )
+})
+
+test_that("rt2s_baseline_service_dates warns when a service resolves to nothing", {
+  b <- service_calendar()
+  b$calendar <- b$calendar[b$calendar$service_id == "SA", ]
+  b$calendar_dates <- data.frame(
+    service_id = "SA",
+    date = c(20260307L, 20260314L),
+    exception_type = 2L,
+    stringsAsFactors = FALSE
+  )
+  expect_warning(
+    dates <- rt2s_baseline_service_dates(b, "SA"),
+    "resolves to no dates"
+  )
+  expect_length(dates, 0L)
+  expect_s3_class(dates, "Date")
+})
+
+test_that("rt2s_baseline_service_dates rejects an unknown or ambiguous service", {
+  expect_error(
+    rt2s_baseline_service_dates(service_calendar(), "NOPE"),
+    "'SA', 'WD'"
+  )
+  dup <- service_calendar()
+  dup$calendar <- rbind(dup$calendar, dup$calendar[1L, ])
+  expect_error(rt2s_baseline_service_dates(dup, "WD"), "at most one")
+  expect_error(
+    rt2s_baseline_service_dates(list(trips = data.frame(x = 1)), "WD"),
+    "neither 'calendar.txt' nor 'calendar_dates.txt'"
+  )
+  expect_error(
+    rt2s_baseline_service_dates(service_calendar(), c("WD", "SA")),
+    "single non-empty"
+  )
+})
+
+test_that("rt2s_baseline_service_dates feeds rt2s_frequencies(service_dates=)", {
+  dates <- rt2s_baseline_service_dates(make_baseline_freq(), "weekday")
+  feeds <- rt2s_frequencies(
+    events = NULL,
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    baseline = make_baseline_freq(),
+    pattern_source = "baseline",
+    service_dates = dates,
+    scaling = make_scaling("median", 1),
+    headways = make_headway_overrides("median", 600L),
+    headway_groups = make_headway_groups()
+  )
+  cal <- feeds$median$calendar
+  expect_identical(cal$start_date, 20260101L)
+  expect_identical(cal$saturday, 0L)
+  expect_identical(cal$monday, 1L)
+  # weekday-only dates leave no gap that calendar.txt does not already express
+  expect_false("calendar_dates" %in% names(feeds$median))
+})

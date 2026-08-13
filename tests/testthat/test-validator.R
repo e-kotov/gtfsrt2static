@@ -346,3 +346,92 @@ test_that("passage-based frequency feeds have no ERROR-level validator notices",
     info = paste("Passage validator ERROR notices:", paste(errors, collapse = ", "))
   )
 })
+
+test_that("a headway_groups-driven feed has no ERROR-level validator notices", {
+  skip_unless_validator_enabled()
+
+  # FR-7's regime end to end: no observations at all, so candidacy, the ratio,
+  # the headway and the calendar span are every one of them caller-supplied.
+  # The load-bearing question is whether such a feed is a valid GTFS feed;
+  # nothing cheaper answers it.
+  windows <- list(early = c("06:00", "06:15"), later = c("06:15", "09:00"))
+  baseline <- make_baseline_freq()
+  scenarios <- c("scheduled", "median")
+
+  feeds <- rt2s_frequencies(
+    events = NULL,
+    windows = windows,
+    quantiles = list(
+      scheduled = c(headway = 0.50),
+      median = c(headway = 0.50)
+    ),
+    baseline = baseline,
+    pattern_source = "baseline",
+    service_dates = rt2s_baseline_service_dates(baseline, "weekday"),
+    scaling = do.call(rbind, lapply(names(windows), function(w) {
+      grid <- make_scaling(scenarios, 1, window = w)
+      grid$ratio <- ifelse(grid$scenario == "median", 1.05, 1)
+      grid
+    })),
+    headways = do.call(rbind, lapply(names(windows), function(w) {
+      make_headway_overrides(scenarios, c(900L, 720L), window = w)
+    })),
+    headway_groups = make_headway_groups(window = names(windows)),
+    strict = TRUE
+  )
+  expect_identical(names(feeds), scenarios)
+  # both windows are emitted even though no event ever fell in either
+  for (s in scenarios) {
+    expect_setequal(feeds[[s]]$trips$trip_id, c("R1_0_early", "R1_0_later"))
+  }
+
+  for (s in scenarios) {
+    notices <- validator_notices(feeds[[s]])
+    errors <- validator_errors(notices)
+    expect_identical(
+      errors,
+      character(),
+      info = paste0(
+        "headway_groups ", s, " validator ERRORs: ",
+        paste(errors, collapse = ", ")
+      )
+    )
+  }
+})
+
+test_that("a feed with calendar_dates gaps has no ERROR-level validator notices", {
+  skip_unless_validator_enabled()
+
+  # A span with holes in it: 2026-03-11..03-31 with 03-18 and 03-19 absent, the
+  # shape a working set of daily files takes when two days are missing. The two
+  # exception rows must be a valid calendar_dates.txt, not just a plausible one.
+  span <- seq(as.Date("2026-03-11"), as.Date("2026-03-31"), by = "day")
+  dates <- span[!span %in% as.Date(c("2026-03-18", "2026-03-19"))]
+
+  feeds <- rt2s_frequencies(
+    make_events_clean(),
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    agency = list(name = "T", url = "https://t.org", timezone = "UTC"),
+    stops = data.frame(
+      stop_id = c("S1", "S2", "S3"),
+      stop_lat = c(40.71, 40.72, 40.73),
+      stop_lon = c(-74.01, -74.02, -74.03)
+    ),
+    service_dates = dates,
+    strict = TRUE
+  )
+  cd <- feeds$median$calendar_dates
+  expect_identical(cd$date, c(20260318L, 20260319L))
+
+  notices <- validator_notices(feeds$median)
+  errors <- validator_errors(notices)
+  expect_identical(
+    errors,
+    character(),
+    info = paste0(
+      "calendar_dates validator ERRORs: ",
+      paste(errors, collapse = ", ")
+    )
+  )
+})

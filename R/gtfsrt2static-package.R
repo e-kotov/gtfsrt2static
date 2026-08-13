@@ -115,6 +115,7 @@ if (getRversion() >= "2.15.1") {
     "i.ratio",
     "i.headway_secs",
     "i.headway_source",
+    "i.override",
     "prev_dep"
   ))
 }

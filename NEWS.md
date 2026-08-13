@@ -1,3 +1,100 @@
+# gtfsrt2static 0.6.0
+
+`rt2s_frequencies()` no longer lets `events` silently bound what the feed
+describes, and a group it cannot serve is now a visible drop rather than a trip
+that advertises a departure it never makes.
+
+## The object has a name now
+
+A `(route_ref, direction_id, window)` is a **headway group** throughout the
+documentation, the argument names and the user-facing messages. The term is
+settled against EN 12896 (Transmodel), whose `HEADWAY JOURNEY GROUP` is "a group
+of journeys defined in order to describe ... frequency-based services" and which
+CEN's own DATA4PT mapping projects onto GTFS `frequencies.txt`. Previously the
+docs said "cell" (~30 times) and the messages said "group" (~5 times) for the
+same object. `window` is unchanged - it is the term the GTFS-analysis tooling
+already uses - and `rt2s_resolved_grid()` keeps its name, since it returns the
+resolved grid *of headway groups*.
+
+## New: `headway_groups=`
+
+* **`rt2s_frequencies(headway_groups=)`** takes the candidate headway groups
+  directly, as a data.frame keyed `route_ref`, `direction_id`, `window` - the
+  `scaling`/`headways` key minus `scenario`, because candidacy is a property of
+  the group and not of the scenario. Candidacy becomes the events-derived groups
+  **union** the supplied ones.
+
+  Before this, a group with no rows in `events` was **never a candidate**, so it
+  was absent from `rt2s_resolved_grid()` entirely rather than present with a
+  `drop_reason` - even under `pattern_source = "baseline"`, where the pattern
+  comes from `baseline`, the ratio from `scaling` and the headway from
+  `headways`, so `events` contributes nothing to that group's output. A caller
+  anchoring on a published network and estimating only per-group headways and
+  ratios therefore emitted a valid but silently smaller feed that the resolved
+  grid did not flag - the exact invariant the grid exists to protect.
+
+  Valid only with `pattern_source = "baseline"`; passing it under `"observed"`
+  is an error, mirroring the existing `scaling` guard. A supplied group with no
+  baseline stop pattern is **not** an error: it warns and appears in the grid
+  with `drop_reason = "no_stop_pattern"`.
+
+* **`events` is now optional**, defaulting to `NULL`, when `headway_groups=` is
+  supplied. No headway analytics run at all in that case, so every headway must
+  come from `headways=`. `events = NULL` without `headway_groups=` is an error.
+
+* **`rt2s_frequencies(service_dates=)`** supplies the `Date` vector the feed
+  describes, replacing the dates otherwise read from `events$service_date` and
+  reduced by the same rule. Required when `events` is `NULL`. Supplying
+  `headway_groups=` without it warns when the supplied groups widen the feed past
+  what `events` covers.
+
+* **`rt2s_baseline_service_dates(baseline, service_id)`** is a new export, the
+  third member of the `rt2s_baseline_*` family: it expands one named baseline
+  service into a `Date` vector, honouring `calendar.txt` **and**
+  `calendar_dates.txt` exceptions (types 1 and 2), including feeds that define a
+  service through exceptions alone. This is the opt-in way to inherit the
+  baseline's days - explicit, caller-chosen, and visible at the call site. It
+  does **not** reverse the documented decision that the assembler never silently
+  reads `baseline$calendar`.
+
+## Behaviour changes
+
+* **No resolvable headway is now a drop.** A headway group with no observed
+  quantile and no `headways=` override is removed from **every** scenario with
+  `drop_reason = "no_headway"`, exactly as `scaling_missing = "drop"` behaves and
+  for the same shared-trip-set reason. This **reverses** the 0.3.0 documentation,
+  which described a group emitted with `headway_secs = NA` as deliberately not a
+  drop.
+
+  It was a latent defect. Such a group wrote a trip with **no `frequencies.txt`
+  row** whose `stop_times` are offsets from `00:00:00`; per GTFS - and per this
+  package's own vignette - a trip absent from `frequencies.txt` is read as
+  exact-time, so that trip advertised a **phantom midnight departure**. It was
+  near-unreachable before (quantiles over non-empty gap pools are positive) and
+  becomes the common path for any supplied group whose headway is missing, so it
+  is fixed everywhere rather than worked around. `extra_trips=` is now the
+  **only** way to carry service that cannot be expressed as a repeating headway,
+  which is what it was built for; the two features stop overlapping.
+
+  An emitted grid row therefore always carries a positive `headway_secs`.
+
+* **`calendar_dates.txt` is emitted when the resolved dates have gaps.**
+  `calendar.txt` reduces a span to weekday flags plus a first and last date, so a
+  working set with two days missing claimed service on those two days. Each date
+  inside `[min, max]` whose weekday is served but which is absent from the
+  resolved set now gets an `exception_type = 2` row. **Only when gaps exist** - a
+  contiguous date set emits no such file, so existing output is unchanged.
+
+* Assembly messages naming the route/direction/window tuple were reworded for the
+  new vocabulary and for `headway_groups=`; the identity error now says
+  "candidate keys" rather than "observed keys", since with `events = NULL` there
+  are none.
+
+Verified byte-identical to 0.5.0 with `headway_groups = NULL`,
+`service_dates = NULL` and no calendar gaps: six assembly configurations built
+from a worktree at `v0.5.0` and from this version, all 120 exported files
+identical.
+
 # gtfsrt2static 0.5.0
 
 **Every exported function was renamed.** The package had no prefix at all and

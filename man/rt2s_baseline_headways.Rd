@@ -86,5 +86,6 @@ baseline <- list(
 rt2s_baseline_headways(baseline, windows = list(am = c("06:00", "09:00")))
 }
 \seealso{
-\code{\link{rt2s_baseline_patterns}}, \code{\link{rt2s_frequencies}}
+\code{\link{rt2s_baseline_patterns}},
+\code{\link{rt2s_baseline_service_dates}}, \code{\link{rt2s_frequencies}}
 }

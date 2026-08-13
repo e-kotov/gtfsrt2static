@@ -2,7 +2,7 @@
 % Please edit documentation in R/frequencies.R
 \name{rt2s_resolved_grid}
 \alias{rt2s_resolved_grid}
-\title{Resolved Cell Grid Behind a Frequency Feed Set}
+\title{Resolved Headway-Group Grid Behind a Frequency Feed Set}
 \usage{
 rt2s_resolved_grid(feeds)
 }
@@ -10,45 +10,51 @@ rt2s_resolved_grid(feeds)
 \item{feeds}{The list returned by \code{\link{rt2s_frequencies}}.}
 }
 \value{
-A data.table with one row per candidate cell and scenario:
+A data.table with one row per candidate headway group and scenario:
 \describe{
 \item{\code{route_ref}, \code{direction_id}, \code{window},
-\code{scenario}}{The cell, keyed exactly as \code{scaling} and
+\code{scenario}}{The headway group, keyed exactly as \code{scaling} and
 \code{headways} key theirs.}
 \item{\code{trip_id}}{The generated representative trip id, matching
-\code{trips.txt} when the cell was emitted.}
+\code{trips.txt} when the group was emitted.}
 \item{\code{ratio}}{The running-time ratio applied, or \code{NA} under
 \code{pattern_source = "observed"}, where no ratio exists.}
 \item{\code{headway_secs}}{The headway actually written to
-\code{frequencies.txt}, or \code{NA} when no frequency row was written.}
+\code{frequencies.txt}, or \code{NA} when the group was dropped.}
 \item{\code{headway_source}}{\code{"observed"} for a quantile-derived
 headway, \code{"override"} when \code{headways} supplied it,
-\code{NA} when no frequency row was written.}
+\code{NA} when the group was dropped.}
 \item{\code{emitted}}{Whether the trip reached this scenario's
 \code{trips.txt}.}
-\item{\code{drop_reason}}{\code{NA} when emitted, else
-\code{"no_stop_pattern"} (a headway with no served/baseline pattern) or
+\item{\code{drop_reason}}{\code{NA} when emitted, else, in pipeline order,
+\code{"no_stop_pattern"} (no served/baseline stop pattern),
 \code{"no_ratio"} (removed from every scenario under
-\code{scaling_missing = "drop"}).}
+\code{scaling_missing = "drop"}) or \code{"no_headway"} (no observed
+quantile and no \code{headways} override, likewise removed from every
+scenario).}
 }
-A cell may be emitted with \code{headway_secs = NA}: the representative trip
-and its stop_times are written, but no \code{frequencies.txt} row is, because
-the group's headway quantile was missing or non-positive. That row is not a
-drop and is deliberately not given a \code{drop_reason}.
+\code{"no_headway"} is a drop rather than a trip emitted without a
+\code{frequencies.txt} row. Per GTFS a trip absent from
+\code{frequencies.txt} is read as exact-time, so emitting one whose
+\code{stop_times} are offsets from \code{00:00:00} would advertise a
+departure at midnight that never runs. Service that cannot be written as a
+repeating headway belongs in \code{rt2s_frequencies(extra_trips=)}. An
+emitted row therefore always carries a positive \code{headway_secs}.
 }
 \description{
 Returns the resolved \code{(route, direction, window, scenario)} grid that
 \code{\link{rt2s_frequencies}} built from: what was emitted, what was
 applied to it, and what was dropped before it reached the feed. This is the
 programmatic counterpart to the assembly warnings - a pipeline that
-reconciles its own cell accounting against the feed can gate on it instead of
-re-deriving the outcome from the written files, which is not always possible.
+reconciles its own headway-group accounting against the feed can gate on it
+instead of re-deriving the outcome from the written files, which is not always
+possible.
 }
 \examples{
 \dontrun{
 feeds <- rt2s_frequencies(events, windows = win)
 grid <- rt2s_resolved_grid(feeds)
-# every candidate cell is accounted for, in every scenario
+# every candidate headway group is accounted for, in every scenario
 table(grid$scenario, grid$drop_reason, useNA = "ifany")
 }
 }
