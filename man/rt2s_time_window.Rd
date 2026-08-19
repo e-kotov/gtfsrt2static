@@ -13,6 +13,7 @@ seconds since midnight.}
 \item{windows}{Named list of length-2 character vectors \code{c(start, end)}
 in "HH:MM" or "HH:MM:SS", e.g.
 \code{list(am_peak = c("06:00", "09:00"), pm_peak = c("16:00", "19:00"))}.
+The window name \code{"other"} is reserved for unassigned service times.
 End values may exceed 24:00 for overnight windows, e.g.
 \code{c("22:00", "26:00")} (requires \code{service_date}). Intervals are
 half-open \code{[start, end)} and the first matching window in list order

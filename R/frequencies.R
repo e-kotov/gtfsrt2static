@@ -114,9 +114,11 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   there would be no candidate headway group.
 #' @param windows Named list of \code{c(start, end)} time strings defining the
 #'   frequency windows, passed to \code{\link{rt2s_time_window}} (overnight windows
-#'   such as \code{c("22:00", "26:00")} are supported). Required: a
-#'   frequency-based feed needs defined windows. Trips outside every window are
-#'   not emitted.
+#'   such as \code{c("22:00", "26:00")} are supported). The window name
+#'   \code{"other"} is reserved for unassigned service times. When
+#'   \code{strict_within_window = TRUE}, configured windows must not overlap.
+#'   Required: a frequency-based feed needs defined windows. Trips outside every
+#'   window are not emitted.
 #' @param quantiles Reliability quantiles in \code{[0, 1]}; one feed is produced
 #'   per entry, named by its name. Two spellings are accepted:
 #'   \itemize{
@@ -235,10 +237,10 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'
 #'   A group with \strong{no} resolvable headway in some scenario - no observed
 #'   quantile and no override - is dropped from \strong{every} scenario with
-#'   \code{drop_reason = "no_headway"}, exactly as
-#'   \code{scaling_missing = "drop"} behaves and for the same shared-trip-set
-#'   reason. Use \code{extra_trips} to carry service that cannot be written as a
-#'   repeating headway.
+#'   \code{drop_reason = "no_within_window_headway"} or \code{"no_headway"},
+#'   exactly as \code{scaling_missing = "drop"} behaves and for the same
+#'   shared-trip-set reason. Use \code{extra_trips} to carry service that cannot
+#'   be written as a repeating headway.
 #' @param headway_groups Optional candidate headway groups, supplied rather than
 #'   derived: a data.frame keyed \code{route_ref}, \code{direction_id},
 #'   \code{window} - the \code{scaling}/\code{headways} key minus
@@ -304,6 +306,9 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   means
 #'   \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
 #'   supplies the extra trips, so it already owns those ids.
+#' @param strict_within_window Passed to \code{\link{rt2s_obs_headways}} when
+#'   estimating headways from events. Logical; default \code{FALSE}. When \code{TRUE},
+#'   configured windows must be pairwise non-overlapping.
 #' @return A named list of gtfsio-convention feed objects, one per quantile
 #'   (e.g. \code{$structural}, \code{$median}, \code{$reliable}); write each
 #'   with \code{gtfsio::export_gtfs()}. Each carries \code{publishable} /
@@ -321,6 +326,9 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   feed, why. Read it with \code{\link{rt2s_resolved_grid}}. Groups dropped for
 #'   want of a stop pattern, a ratio or a headway are present and flagged rather
 #'   than absent, so the grid reconciles against a caller's own drop accounting.
+#'   With \code{strict_within_window = TRUE}, an observed group with fewer than
+#'   two starts inside a window is retained with
+#'   \code{drop_reason = "no_within_window_headway"}.
 #' @seealso \code{\link{rt2s_resolved_grid}} for the resolved grid,
 #'   \code{\link{rt2s_baseline_service_dates}} for \code{service_dates}.
 #' @export
@@ -349,13 +357,38 @@ rt2s_frequencies <- function(
   headways = NULL,
   headway_groups = NULL,
   route_key = c("route_id", "route_short_name"),
-  extra_trips = NULL
+  extra_trips = NULL,
+  strict_within_window = FALSE
 ) {
+  if (
+    missing(windows) ||
+      !is.list(windows) ||
+      length(windows) == 0L ||
+      is.null(names(windows)) ||
+      any(!nzchar(names(windows)))
+  ) {
+    stop(
+      "'windows' must be a non-empty named list of c(start, end) time ",
+      "strings; a frequency-based feed needs defined windows.",
+      call. = FALSE
+    )
+  }
+  check_reserved_window_name(windows)
+  check_bool(strict_within_window, "strict_within_window")
+  if (strict_within_window) {
+    check_strict_windows(windows)
+  }
   if (is.null(events) && is.null(headway_groups)) {
     stop(
       "'events' is NULL and no 'headway_groups' were supplied, so there is no ",
       "candidate headway group to build a feed from. Pass observed stop ",
       "events, or name the groups explicitly with headway_groups=.",
+      call. = FALSE
+    )
+  }
+  if (is.null(events) && strict_within_window) {
+    warning(
+      "'strict_within_window' has no headway-estimation effect when 'events' is NULL.",
       call. = FALSE
     )
   }
@@ -420,19 +453,6 @@ rt2s_frequencies <- function(
       )
     }
   }
-  if (
-    missing(windows) ||
-      !is.list(windows) ||
-      length(windows) == 0L ||
-      is.null(names(windows)) ||
-      any(!nzchar(names(windows)))
-  ) {
-    stop(
-      "'windows' must be a non-empty named list of c(start, end) time ",
-      "strings; a frequency-based feed needs defined windows.",
-      call. = FALSE
-    )
-  }
   if (!exact_times %in% c(0L, 1L)) {
     stop("'exact_times' must be 0 or 1.", call. = FALSE)
   }
@@ -460,7 +480,8 @@ rt2s_frequencies <- function(
       dt,
       windows = windows,
       quantiles = q$headway,
-      max_headway_secs = max_headway_secs
+      max_headway_secs = max_headway_secs,
+      strict_within_window = strict_within_window
     )
   } else {
     headways_by_passage(
@@ -469,10 +490,25 @@ rt2s_frequencies <- function(
       windows = windows,
       quantiles = q$headway,
       min_revisit_gap_s = min_revisit_gap_s,
-      max_headway_secs = max_headway_secs
+      max_headway_secs = max_headway_secs,
+      strict_within_window = strict_within_window
     )
   }
   hw <- hw[window != "other"]
+  no_within_window <- data.table::data.table(
+    route_ref = character(), direction_id = integer(), window = character()
+  )
+  if (strict_within_window && !anchored && !is.null(dt)) {
+    attr_groups <- attr(hw, "no_within_window_groups", exact = TRUE)
+    if (!is.null(attr_groups) && nrow(attr_groups) > 0L) {
+      no_within_window <- data.table::copy(attr_groups)
+    }
+    data.table::setattr(hw, "no_within_window_groups", NULL)
+    if ("no_within_window" %in% names(hw)) hw[, no_within_window := NULL]
+  } else {
+    if ("no_within_window" %in% names(hw)) hw[, no_within_window := NULL]
+    data.table::setattr(hw, "no_within_window_groups", NULL)
+  }
   # Candidacy is events-derived groups UNION caller-supplied ones. Under
   # pattern_source = "baseline" the pattern comes from 'baseline', the ratio
   # from 'scaling' and the headway from 'headways', so 'events' contributes
@@ -535,6 +571,9 @@ rt2s_frequencies <- function(
 
   # --- representative trips (shared across scenarios) -----------------------
   grp <- data.table::copy(hw)
+  if ("no_within_window" %in% names(grp)) grp[, no_within_window := NULL]
+  data.table::setattr(grp, "no_within_window_groups", NULL)
+
   grp[, route_id := ifelse(is.na(route_ref), "R1", as.character(route_ref))]
   grp[, trip_id := paste(
     route_id,
@@ -547,6 +586,26 @@ rt2s_frequencies <- function(
   # against this snapshot so a dropped group stays visible with a reason instead
   # of vanishing from the accounting.
   candidate_groups <- unique(grp[, list(route_ref, direction_id, window, trip_id)])
+  no_within_window_ids <- character()
+  if (nrow(no_within_window) > 0L) {
+    no_within_window[, route_id := ifelse(
+      is.na(route_ref), "R1", as.character(route_ref)
+    )]
+    no_within_window[, trip_id := paste(
+      route_id,
+      ifelse(is.na(direction_id), "NA", as.character(direction_id)),
+      window,
+      sep = "_"
+    )]
+    no_within_window_ids <- unique(no_within_window$trip_id)
+    missing_no_within <- no_within_window[
+      !trip_id %in% candidate_groups$trip_id,
+      list(route_ref, direction_id, window, trip_id)
+    ]
+    candidate_groups <- data.table::rbindlist(
+      list(candidate_groups, missing_no_within), use.names = TRUE
+    )
+  }
 
   # window bounds as clock strings (normalise "HH:MM" -> "HH:MM:SS")
   win_start <- vapply(windows, function(w) secs_to_clock(hms_to_secs(w[1])), "")
@@ -881,7 +940,8 @@ rt2s_frequencies <- function(
     dropped = list(
       no_stop_pattern = dropped_no_pattern,
       no_ratio = dropped_no_ratio,
-      no_headway = dropped_no_headway
+      no_headway = dropped_no_headway,
+      no_within_window_headway = no_within_window_ids
     )
   )
   out <- lapply(out, `[[`, "feed")
@@ -1424,10 +1484,6 @@ resolved_grid <- function(groups, scen, ratios, built, dropped) {
     is.na(drop_reason) & trip_id %in% dropped$no_ratio,
     drop_reason := "no_ratio"
   ]
-  grid[
-    is.na(drop_reason) & trip_id %in% dropped$no_headway,
-    drop_reason := "no_headway"
-  ]
 
   if (!is.null(ratios) && nrow(ratios) > 0L) {
     grid[
@@ -1445,6 +1501,14 @@ resolved_grid <- function(groups, scen, ratios, built, dropped) {
       on = c("trip_id", "scenario")
     ]
   }
+  grid[
+    emitted == FALSE & is.na(drop_reason) & trip_id %in% dropped$no_within_window_headway,
+    drop_reason := "no_within_window_headway"
+  ]
+  grid[
+    emitted == FALSE & is.na(drop_reason) & trip_id %in% dropped$no_headway,
+    drop_reason := "no_headway"
+  ]
   data.table::setcolorder(
     grid,
     c(
@@ -1494,9 +1558,10 @@ resolved_grid <- function(groups, scen, ratios, built, dropped) {
 #'     \item{\code{drop_reason}}{\code{NA} when emitted, else, in pipeline order,
 #'       \code{"no_stop_pattern"} (no served/baseline stop pattern),
 #'       \code{"no_ratio"} (removed from every scenario under
-#'       \code{scaling_missing = "drop"}) or \code{"no_headway"} (no observed
-#'       quantile and no \code{headways} override, likewise removed from every
-#'       scenario).}
+#'       \code{scaling_missing = "drop"}), \code{"no_headway"} (no observed
+#'       quantile and no \code{headways} override), or
+#'       \code{"no_within_window_headway"} (strict observed mode found fewer
+#'       than two starts in the configured window).}
 #'   }
 #'   \code{"no_headway"} is a drop rather than a trip emitted without a
 #'   \code{frequencies.txt} row. Per GTFS a trip absent from

@@ -166,6 +166,16 @@ test_that("rt2s_baseline_headways summarises the planned trip-start gaps", {
   expect_identical(m$headway_secs, 750L)
 })
 
+test_that("rt2s_baseline_headways reserves the other window name", {
+  expect_error(
+    rt2s_baseline_headways(
+      make_baseline_freq(),
+      windows = list(other = c("06:00", "09:00"))
+    ),
+    "reserved"
+  )
+})
+
 test_that("rt2s_baseline_headways splits by window and drops single departures", {
   h <- rt2s_baseline_headways(
     make_baseline_freq(),

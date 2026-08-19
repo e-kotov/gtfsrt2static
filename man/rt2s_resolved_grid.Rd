@@ -29,9 +29,10 @@ headway, \code{"override"} when \code{headways} supplied it,
 \item{\code{drop_reason}}{\code{NA} when emitted, else, in pipeline order,
 \code{"no_stop_pattern"} (no served/baseline stop pattern),
 \code{"no_ratio"} (removed from every scenario under
-\code{scaling_missing = "drop"}) or \code{"no_headway"} (no observed
-quantile and no \code{headways} override, likewise removed from every
-scenario).}
+\code{scaling_missing = "drop"}), \code{"no_headway"} (no observed
+quantile and no \code{headways} override), or
+\code{"no_within_window_headway"} (strict observed mode found fewer
+than two starts in the configured window).}
 }
 \code{"no_headway"} is a drop rather than a trip emitted without a
 \code{frequencies.txt} row. Per GTFS a trip absent from

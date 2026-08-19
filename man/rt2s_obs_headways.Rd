@@ -11,7 +11,8 @@ rt2s_obs_headways(
   max_headway_secs = 3L * 3600L,
   method = c("trip_start", "passage"),
   reference_stops = NULL,
-  min_revisit_gap_s = 600L
+  min_revisit_gap_s = 600L,
+  strict_within_window = FALSE
 )
 }
 \arguments{
@@ -24,7 +25,9 @@ date, and stop, so it exposes at most one passage per stop per trip and
 cannot recover repeated visits that were already reduced.}
 
 \item{windows}{Time-window definition passed to \code{\link{rt2s_time_window}};
-\code{NULL} (default) treats each day as one \code{"all"} window.}
+\code{NULL} (default) treats each day as one \code{"all"} window. The window
+name \code{"other"} is reserved for unassigned service times. When
+\code{strict_within_window = TRUE}, configured windows must not overlap.}
 
 \item{quantiles}{Named numeric vector of probabilities in \code{[0, 1]};
 each becomes an integer-seconds column \code{headway_<name>}. Default
@@ -51,6 +54,14 @@ revisits cannot be distinguished from following vehicles, so each
 unknown-vehicle detection is treated as a separate passage and this gap does
 not apply to it. Default 600 (10 min). Explicit values are ignored with a
 warning under \code{method = "trip_start"}.}
+
+\item{strict_within_window}{Logical. When \code{FALSE} (default), intervals
+are calculated consecutively within each service date and attributed to the
+window of the later event, allowing intervals that cross window boundaries.
+When \code{TRUE}, events are assigned to windows before calculating intervals,
+intervals crossing a window boundary are discarded, and events in unassigned
+times are ignored. Configured windows must be pairwise non-overlapping under
+\code{strict_within_window = TRUE}.}
 }
 \value{
 A data.table with columns \code{route_ref}, \code{direction_id},

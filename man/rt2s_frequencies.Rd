@@ -29,7 +29,8 @@ rt2s_frequencies(
   headways = NULL,
   headway_groups = NULL,
   route_key = c("route_id", "route_short_name"),
-  extra_trips = NULL
+  extra_trips = NULL,
+  strict_within_window = FALSE
 )
 }
 \arguments{
@@ -44,9 +45,11 @@ there would be no candidate headway group.}
 
 \item{windows}{Named list of \code{c(start, end)} time strings defining the
 frequency windows, passed to \code{\link{rt2s_time_window}} (overnight windows
-such as \code{c("22:00", "26:00")} are supported). Required: a
-frequency-based feed needs defined windows. Trips outside every window are
-not emitted.}
+such as \code{c("22:00", "26:00")} are supported). The window name
+\code{"other"} is reserved for unassigned service times. When
+\code{strict_within_window = TRUE}, configured windows must not overlap.
+Required: a frequency-based feed needs defined windows. Trips outside every
+window are not emitted.}
 
 \item{quantiles}{Reliability quantiles in \code{[0, 1]}; one feed is produced
 per entry, named by its name. Two spellings are accepted:
@@ -177,10 +180,10 @@ ignored with a warning.
 
 A group with \strong{no} resolvable headway in some scenario - no observed
 quantile and no override - is dropped from \strong{every} scenario with
-\code{drop_reason = "no_headway"}, exactly as
-\code{scaling_missing = "drop"} behaves and for the same shared-trip-set
-reason. Use \code{extra_trips} to carry service that cannot be written as a
-repeating headway.}
+\code{drop_reason = "no_within_window_headway"} or \code{"no_headway"},
+exactly as \code{scaling_missing = "drop"} behaves and for the same
+shared-trip-set reason. Use \code{extra_trips} to carry service that cannot
+be written as a repeating headway.}
 
 \item{headway_groups}{Optional candidate headway groups, supplied rather than
 derived: a data.frame keyed \code{route_ref}, \code{direction_id},
@@ -249,6 +252,10 @@ extra trips are not groups. Reconciling a feed's \code{trips.txt} therefore
 means
 \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
 supplies the extra trips, so it already owns those ids.}
+
+\item{strict_within_window}{Passed to \code{\link{rt2s_obs_headways}} when
+estimating headways from events. Logical; default \code{FALSE}. When \code{TRUE},
+configured windows must be pairwise non-overlapping.}
 }
 \value{
 A named list of gtfsio-convention feed objects, one per quantile
@@ -268,6 +275,9 @@ ratio and headway actually applied and, for groups that never reached the
 feed, why. Read it with \code{\link{rt2s_resolved_grid}}. Groups dropped for
 want of a stop pattern, a ratio or a headway are present and flagged rather
 than absent, so the grid reconciles against a caller's own drop accounting.
+With \code{strict_within_window = TRUE}, an observed group with fewer than
+two starts inside a window is retained with
+\code{drop_reason = "no_within_window_headway"}.
 }
 \description{
 Collapses many observed runs into compact, frequency-based schedules: one

@@ -247,8 +247,9 @@ rt2s_baseline_patterns <- function(
 #'   a path to a GTFS zip. Requires \code{trips} and \code{stop_times}.
 #' @param windows Named list of \code{c(start, end)} time strings, as in
 #'   \code{\link{rt2s_frequencies}}; passed to \code{\link{rt2s_time_window}}, so
-#'   overnight windows such as \code{c("22:00", "26:00")} work. Trips whose first
-#'   departure falls in no window are excluded.
+#'   overnight windows such as \code{c("22:00", "26:00")} work. The name
+#'   \code{"other"} is reserved for unassigned times and is rejected. Trips whose
+#'   first departure falls in no window are excluded.
 #' @param route_key Which baseline column becomes \code{route_ref}; see
 #'   \code{\link{rt2s_baseline_patterns}}.
 #' @param statistic How to summarise the gaps: \code{"median"} (default) or

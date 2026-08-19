@@ -259,6 +259,15 @@ check_positive_seconds <- function(x, arg) {
   invisible(as.numeric(x))
 }
 
+#' Validate a scalar logical argument
+#' @noRd
+check_bool <- function(x, arg) {
+  if (!is.logical(x) || length(x) != 1L || is.na(x)) {
+    stop("'", arg, "' must be TRUE or FALSE.", call. = FALSE)
+  }
+  invisible(x)
+}
+
 #' Integer quantile matching as.integer(quantile(...)) (type 7,
 #' truncated toward zero).
 #' @noRd
@@ -362,6 +371,7 @@ compute_stop_order <- function(dt_off) {
 #' @param windows Named list of length-2 character vectors \code{c(start, end)}
 #'   in "HH:MM" or "HH:MM:SS", e.g.
 #'   \code{list(am_peak = c("06:00", "09:00"), pm_peak = c("16:00", "19:00"))}.
+#'   The window name \code{"other"} is reserved for unassigned service times.
 #'   End values may exceed 24:00 for overnight windows, e.g.
 #'   \code{c("22:00", "26:00")} (requires \code{service_date}). Intervals are
 #'   half-open \code{[start, end)} and the first matching window in list order
@@ -402,6 +412,7 @@ rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) 
       call. = FALSE
     )
   }
+  check_reserved_window_name(windows)
   out <- rep(NA_character_, length(secs))
   for (nm in names(windows)) {
     w <- windows[[nm]]
@@ -418,6 +429,64 @@ rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) 
   }
   out[is.na(out) & !is.na(secs)] <- "other"
   out
+}
+
+#' Reject the reserved unassigned-window label at public boundaries
+#' @noRd
+check_reserved_window_name <- function(windows) {
+  if (is.list(windows) && !is.null(names(windows)) && "other" %in% names(windows)) {
+    stop("Window name 'other' is reserved for unassigned service times.", call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Validate that configured windows are pairwise non-overlapping
+#' @noRd
+check_strict_windows <- function(windows) {
+  if (is.null(windows)) return(invisible(NULL))
+  if (!is.list(windows) || is.null(names(windows)) || any(!nzchar(names(windows)))) {
+    stop(
+      "'windows' must be a named list of c(start, end) time strings.",
+      call. = FALSE
+    )
+  }
+  check_reserved_window_name(windows)
+  nms <- names(windows)
+  n <- length(nms)
+  parsed <- vector("list", n)
+  for (i in seq_len(n)) {
+    nm <- nms[i]
+    w <- windows[[i]]
+    if (length(w) != 2L) {
+      stop("Window '", nm, "' must be a length-2 c(start, end).", call. = FALSE)
+    }
+    s <- hms_to_secs(w[1])
+    e <- hms_to_secs(w[2])
+    if (is.na(s) || is.na(e)) {
+      stop("Window '", nm, "' has an unparseable time.", call. = FALSE)
+    }
+    if (e <= s) {
+      stop(
+        "Window '", nm, "' end time (", w[2], ") must be strictly after start time (", w[1], ").",
+        call. = FALSE
+      )
+    }
+    parsed[[i]] <- list(name = nm, s = s, e = e, raw = w)
+  }
+  if (n <= 1L) return(invisible(NULL))
+  for (i in seq_len(n - 1L)) {
+    for (j in seq(i + 1L, n)) {
+      if (max(parsed[[i]]$s, parsed[[j]]$s) < min(parsed[[i]]$e, parsed[[j]]$e)) {
+        stop(
+          "'strict_within_window = TRUE' requires non-overlapping configured windows, but window '",
+          parsed[[i]]$name, "' [", parsed[[i]]$raw[1], ", ", parsed[[i]]$raw[2], ") and window '",
+          parsed[[j]]$name, "' [", parsed[[j]]$raw[1], ", ", parsed[[j]]$raw[2], ") overlap.",
+          call. = FALSE
+        )
+      }
+    }
+  }
+  invisible(NULL)
 }
 
 #' Cross-Trip Canonical Stop Order for Each Route-Direction
@@ -508,7 +577,9 @@ rt2s_obs_stop_order <- function(events) {
 #'   date, and stop, so it exposes at most one passage per stop per trip and
 #'   cannot recover repeated visits that were already reduced.
 #' @param windows Time-window definition passed to \code{\link{rt2s_time_window}};
-#'   \code{NULL} (default) treats each day as one \code{"all"} window.
+#'   \code{NULL} (default) treats each day as one \code{"all"} window. The window
+#'   name \code{"other"} is reserved for unassigned service times. When
+#'   \code{strict_within_window = TRUE}, configured windows must not overlap.
 #' @param quantiles Named numeric vector of probabilities in \code{[0, 1]};
 #'   each becomes an integer-seconds column \code{headway_<name>}. Default
 #'   \code{c(median = 0.5, p95 = 0.95)}.
@@ -530,6 +601,13 @@ rt2s_obs_stop_order <- function(events) {
 #'   unknown-vehicle detection is treated as a separate passage and this gap does
 #'   not apply to it. Default 600 (10 min). Explicit values are ignored with a
 #'   warning under \code{method = "trip_start"}.
+#' @param strict_within_window Logical. When \code{FALSE} (default), intervals
+#'   are calculated consecutively within each service date and attributed to the
+#'   window of the later event, allowing intervals that cross window boundaries.
+#'   When \code{TRUE}, events are assigned to windows before calculating intervals,
+#'   intervals crossing a window boundary are discarded, and events in unassigned
+#'   times are ignored. Configured windows must be pairwise non-overlapping under
+#'   \code{strict_within_window = TRUE}.
 #' @return A data.table with columns \code{route_ref}, \code{direction_id},
 #'   \code{window}, one \code{headway_<name>} column per quantile (integer
 #'   seconds), and \code{n_headways} (count of headways summarised). Groups with
@@ -549,9 +627,12 @@ rt2s_obs_headways <- function(
   max_headway_secs = 3L * 3600L,
   method = c("trip_start", "passage"),
   reference_stops = NULL,
-  min_revisit_gap_s = 600L
+  min_revisit_gap_s = 600L,
+  strict_within_window = FALSE
 ) {
   method <- match.arg(method)
+  check_bool(strict_within_window, "strict_within_window")
+  check_reserved_window_name(windows)
   if (identical(method, "trip_start")) {
     # An argument that cannot apply warns rather than being silently dropped;
     # missing() is what distinguishes "explicitly passed" from "left at default".
@@ -574,7 +655,8 @@ rt2s_obs_headways <- function(
       events,
       windows = windows,
       quantiles = quantiles,
-      max_headway_secs = max_headway_secs
+      max_headway_secs = max_headway_secs,
+      strict_within_window = strict_within_window
     ))
   }
   headways_by_passage(
@@ -583,7 +665,8 @@ rt2s_obs_headways <- function(
     windows = windows,
     quantiles = quantiles,
     min_revisit_gap_s = min_revisit_gap_s,
-    max_headway_secs = max_headway_secs
+    max_headway_secs = max_headway_secs,
+    strict_within_window = strict_within_window
   )
 }
 
@@ -593,7 +676,8 @@ headways_by_trip_start <- function(
   events,
   windows = NULL,
   quantiles = c(median = 0.5, p95 = 0.95),
-  max_headway_secs = 3L * 3600L
+  max_headway_secs = 3L * 3600L,
+  strict_within_window = FALSE
 ) {
   dt <- rt2s_events_validate(events)
   check_quantiles(quantiles)
@@ -601,31 +685,61 @@ headways_by_trip_start <- function(
     max_headway_secs,
     "max_headway_secs"
   )
+  check_bool(strict_within_window, "strict_within_window")
+  if (strict_within_window) {
+    check_strict_windows(windows)
+  }
   tz <- attr(dt$arrival_time, "tzone")
   if (is.null(tz) || !nzchar(tz)) tz <- "UTC"
 
   starts <- trip_start_times(dt)
   trip_meta <- unique(dt[, list(service_date, trip_ref, route_ref, direction_id)])
   trips <- merge(starts, trip_meta, by = c("service_date", "trip_ref"))
-  data.table::setorder(
-    trips,
-    route_ref,
-    direction_id,
-    service_date,
-    trip_start,
-    trip_ref
-  )
-  trips[,
-    headway_secs := c(NA_real_, diff(as.numeric(trip_start))),
-    by = list(route_ref, direction_id, service_date)
-  ]
-  trips[
-    headway_secs <= 0 | headway_secs > max_headway_secs,
-    headway_secs := NA_real_
-  ]
-  trips[,
-    window := rt2s_time_window(trip_start, windows, service_date = service_date, tz = tz)
-  ]
+
+  if (!strict_within_window) {
+    data.table::setorder(
+      trips,
+      route_ref,
+      direction_id,
+      service_date,
+      trip_start,
+      trip_ref
+    )
+    trips[,
+      headway_secs := c(NA_real_, diff(as.numeric(trip_start))),
+      by = list(route_ref, direction_id, service_date)
+    ]
+    trips[
+      headway_secs <= 0 | headway_secs > max_headway_secs,
+      headway_secs := NA_real_
+    ]
+    trips[,
+      window := rt2s_time_window(trip_start, windows, service_date = service_date, tz = tz)
+    ]
+  } else {
+    trips[,
+      window := rt2s_time_window(trip_start, windows, service_date = service_date, tz = tz)
+    ]
+    assigned_strict_groups <- unique(trips[!is.na(window) & window != "other", list(route_ref, direction_id, window)])
+    trips <- trips[!is.na(window) & window != "other"]
+    data.table::setorder(
+      trips,
+      route_ref,
+      direction_id,
+      service_date,
+      window,
+      trip_start,
+      trip_ref
+    )
+    trips[,
+      headway_secs := c(NA_real_, diff(as.numeric(trip_start))),
+      by = list(route_ref, direction_id, service_date, window)
+    ]
+    trips[
+      headway_secs <= 0 | headway_secs > max_headway_secs,
+      headway_secs := NA_real_
+    ]
+  }
 
   qn <- names(quantiles)
   summ <- trips[
@@ -639,6 +753,14 @@ headways_by_trip_start <- function(
     ),
     by = list(route_ref, direction_id, window)
   ]
+  if (strict_within_window) {
+    missing_strict <- if (exists("assigned_strict_groups", inherits = FALSE)) {
+      assigned_strict_groups[!summ, on = c("route_ref", "direction_id", "window")]
+    } else {
+      data.table::data.table(route_ref = character(), direction_id = integer(), window = character())
+    }
+    data.table::setattr(summ, "no_within_window_groups", missing_strict)
+  }
   data.table::setorder(summ, route_ref, direction_id, window)
   summ[]
 }
@@ -656,7 +778,8 @@ headways_by_passage <- function(
   windows = NULL,
   quantiles = c(median = 0.5, p95 = 0.95),
   min_revisit_gap_s = 600L,
-  max_headway_secs = 3L * 3600L
+  max_headway_secs = 3L * 3600L,
+  strict_within_window = FALSE
 ) {
   dt <- rt2s_events_validate(events)
   check_quantiles(quantiles)
@@ -668,6 +791,10 @@ headways_by_passage <- function(
     max_headway_secs,
     "max_headway_secs"
   )
+  check_bool(strict_within_window, "strict_within_window")
+  if (strict_within_window) {
+    check_strict_windows(windows)
+  }
   tz <- attr(dt$arrival_time, "tzone")
   if (is.null(tz) || !nzchar(tz)) tz <- "UTC"
 
@@ -747,32 +874,65 @@ headways_by_passage <- function(
       passage_id
     )
   ]
-  data.table::setorder(
-    passages,
-    route_ref,
-    direction_id,
-    service_date,
-    reference_stop_ref,
-    passage_time,
-    vehicle_key,
-    passage_id
-  )
-  passages[,
-    headway_secs := c(NA_real_, diff(as.numeric(passage_time))),
-    by = list(route_ref, direction_id, service_date, reference_stop_ref)
-  ]
-  passages[
-    headway_secs <= 0 | headway_secs > max_headway_secs,
-    headway_secs := NA_real_
-  ]
-  passages[,
-    window := rt2s_time_window(
+
+  if (!strict_within_window) {
+    data.table::setorder(
+      passages,
+      route_ref,
+      direction_id,
+      service_date,
+      reference_stop_ref,
       passage_time,
-      windows,
-      service_date = service_date,
-      tz = tz
+      vehicle_key,
+      passage_id
     )
-  ]
+    passages[,
+      headway_secs := c(NA_real_, diff(as.numeric(passage_time))),
+      by = list(route_ref, direction_id, service_date, reference_stop_ref)
+    ]
+    passages[
+      headway_secs <= 0 | headway_secs > max_headway_secs,
+      headway_secs := NA_real_
+    ]
+    passages[,
+      window := rt2s_time_window(
+        passage_time,
+        windows,
+        service_date = service_date,
+        tz = tz
+      )
+    ]
+  } else {
+    passages[,
+      window := rt2s_time_window(
+        passage_time,
+        windows,
+        service_date = service_date,
+        tz = tz
+      )
+    ]
+    assigned_passage_groups <- unique(passages[!is.na(window) & window != "other", list(route_ref, direction_id, window, reference_stop_ref)])
+    passages <- passages[!is.na(window) & window != "other"]
+    data.table::setorder(
+      passages,
+      route_ref,
+      direction_id,
+      service_date,
+      reference_stop_ref,
+      window,
+      passage_time,
+      vehicle_key,
+      passage_id
+    )
+    passages[,
+      headway_secs := c(NA_real_, diff(as.numeric(passage_time))),
+      by = list(route_ref, direction_id, service_date, reference_stop_ref, window)
+    ]
+    passages[
+      headway_secs <= 0 | headway_secs > max_headway_secs,
+      headway_secs := NA_real_
+    ]
+  }
 
   qn <- names(quantiles)
   summ <- passages[
@@ -786,6 +946,15 @@ headways_by_passage <- function(
     ),
     by = list(route_ref, direction_id, window, reference_stop_ref)
   ]
+  if (strict_within_window) {
+    missing_passage <- if (exists("assigned_passage_groups", inherits = FALSE)) {
+      assigned_passage_groups[!summ, on = c("route_ref", "direction_id", "window", "reference_stop_ref")]
+    } else {
+      data.table::data.table(route_ref = character(), direction_id = integer(), window = character(), reference_stop_ref = character())
+    }
+    data.table::setattr(summ, "no_within_window_groups", missing_passage)
+  }
+
   if (nrow(summ) == 0L) {
     passage_counts <- passages[
       ,

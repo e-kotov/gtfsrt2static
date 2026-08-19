@@ -652,3 +652,380 @@ test_that("secs_to_clock refuses NA / negative offsets", {
   expect_error(secs_to_clock(c(0L, NA_integer_)), "NA")
   expect_error(secs_to_clock(c(-1L, 10L)), "negative")
 })
+
+test_that("rt2s_obs_headways validates strict_within_window", {
+  ev <- make_events_clean()
+  expect_error(
+    rt2s_obs_headways(ev, strict_within_window = "yes"),
+    "'strict_within_window' must be TRUE or FALSE"
+  )
+  expect_error(
+    rt2s_obs_headways(ev, strict_within_window = NA),
+    "'strict_within_window' must be TRUE or FALSE"
+  )
+  expect_error(
+    rt2s_obs_headways(ev, strict_within_window = c(TRUE, FALSE)),
+    "'strict_within_window' must be TRUE or FALSE"
+  )
+})
+
+test_that("strict_within_window excludes cross-boundary intervals under method = 'trip_start'", {
+  # 3 trips:
+  # T1 @ 07:00:00 (am_peak)
+  # T2 @ 08:30:00 (am_peak)
+  # T3 @ 09:30:00 (midday)
+  # Windows: am_peak = c("06:00", "09:00"), midday = c("09:00", "12:00")
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00", T3 = "09:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
+  )
+  win <- list(am_peak = c("06:00", "09:00"), midday = c("09:00", "12:00"))
+
+  # Under default / strict_within_window = FALSE:
+  # Interval 1 (T1 -> T2): 08:30 - 07:00 = 5400s (assigned to am_peak)
+  # Interval 2 (T2 -> T3): 09:30 - 08:30 = 3600s (assigned to midday)
+  legacy <- rt2s_obs_headways(ev, windows = win, strict_within_window = FALSE)
+  expect_identical(nrow(legacy), 2L)
+  expect_identical(legacy[window == "am_peak", headway_median], 5400L)
+  expect_identical(legacy[window == "am_peak", n_headways], 1L)
+  expect_identical(legacy[window == "midday", headway_median], 3600L)
+  expect_identical(legacy[window == "midday", n_headways], 1L)
+
+  # Under strict_within_window = TRUE:
+  # am_peak: T1 (07:00) and T2 (08:30) -> 1 interval of 5400s
+  # midday: T3 (09:30) is lone trip in window -> 0 intervals (dropped from summary)
+  # The 08:30 -> 09:30 interval is across the 09:00 window boundary and is discarded.
+  strict <- rt2s_obs_headways(ev, windows = win, strict_within_window = TRUE)
+  expect_identical(nrow(strict), 1L)
+  expect_identical(strict$window, "am_peak")
+  expect_identical(strict$headway_median, 5400L)
+  expect_identical(strict$n_headways, 1L)
+})
+
+test_that("strict_within_window excludes cross-boundary intervals under method = 'passage'", {
+  # 3 passages at reference stop S1:
+  # V1 passage @ 07:15:00 (am_peak)
+  # V2 passage @ 08:45:00 (am_peak)
+  # V3 passage @ 09:45:00 (midday)
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00", T3 = "09:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(900, 1200), T2 = c(900, 1200), T3 = c(900, 1200))
+  )
+  win <- list(am_peak = c("06:00", "09:00"), midday = c("09:00", "12:00"))
+
+  # Under default / strict_within_window = FALSE:
+  legacy <- rt2s_obs_headways(
+    ev,
+    windows = win,
+    method = "passage",
+    reference_stops = "S1",
+    strict_within_window = FALSE
+  )
+  expect_identical(nrow(legacy), 2L)
+  expect_identical(legacy[window == "am_peak", headway_median], 5400L)
+  expect_identical(legacy[window == "am_peak", n_headways], 1L)
+  expect_identical(legacy[window == "midday", headway_median], 3600L)
+  expect_identical(legacy[window == "midday", n_headways], 1L)
+
+  # Under strict_within_window = TRUE:
+  strict <- rt2s_obs_headways(
+    ev,
+    windows = win,
+    method = "passage",
+    reference_stops = "S1",
+    strict_within_window = TRUE
+  )
+  expect_identical(nrow(strict), 1L)
+  expect_identical(strict$window, "am_peak")
+  expect_identical(strict$headway_median, 5400L)
+  expect_identical(strict$n_headways, 1L)
+})
+
+test_that("strict_within_window discards 'other' window events before interval calculation", {
+  # T0 @ 05:00:00 (outside windows -> 'other')
+  # T1 @ 07:00:00 (am_peak)
+  # T2 @ 08:00:00 (am_peak)
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T0 = "05:00:00", T1 = "07:00:00", T2 = "08:00:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T0 = c(0, 300), T1 = c(0, 300), T2 = c(0, 300))
+  )
+  win <- list(am_peak = c("06:00", "09:00"))
+
+  # Under strict_within_window = TRUE:
+  # T0 (05:00) is in 'other' and discarded.
+  # T1 (07:00) and T2 (08:00) are in am_peak -> 1 headway of 3600s (07:00 -> 08:00).
+  # Gap from 05:00 -> 07:00 (7200s) does not enter am_peak.
+  strict <- rt2s_obs_headways(ev, windows = win, strict_within_window = TRUE)
+  expect_identical(nrow(strict), 1L)
+  expect_identical(strict$window, "am_peak")
+  expect_identical(strict$headway_median, 3600L)
+  expect_identical(strict$n_headways, 1L)
+})
+
+test_that("strict_within_window preserves post-midnight service day attribution", {
+  # 2 trips on same service date 2026-07-14:
+  # T1 @ 23:30:00 (2026-07-14 23:30:00)
+  # T2 @ 24:30:00 (2026-07-15 00:30:00, attributed to 2026-07-14)
+  # Overnight window: c("22:00", "26:00")
+  ev1 <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "23:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300))
+  )
+  ev2 <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T2 = "00:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T2 = c(0, 300))
+  )
+  # Set T2's actual arrival timestamp to 2026-07-15 00:30:00 while keeping service_date = 2026-07-14
+  ev2$arrival_time <- ev2$arrival_time + 86400
+  ev2$departure_time <- ev2$departure_time + 86400
+  ev <- data.table::rbindlist(list(ev1, ev2))
+
+  win <- list(overnight = c("22:00", "26:00"))
+  strict <- rt2s_obs_headways(ev, windows = win, strict_within_window = TRUE)
+  expect_identical(nrow(strict), 1L)
+  expect_identical(strict$window, "overnight")
+  expect_identical(strict$headway_median, 3600L)
+  expect_identical(strict$n_headways, 1L)
+})
+
+test_that("rt2s_time_window and rt2s_obs_headways reserve 'other' window name", {
+  x <- as.POSIXct("2026-07-14 07:30:00", tz = "UTC")
+  expect_error(
+    rt2s_time_window(x, windows = list(other = c("06:00", "09:00"))),
+    "Window name 'other' is reserved"
+  )
+
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:00:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300))
+  )
+  expect_error(
+    rt2s_obs_headways(ev, windows = list(other = c("06:00", "09:00"))),
+    "Window name 'other' is reserved"
+  )
+})
+
+test_that("strict_within_window rejects overlapping windows but legacy allows them", {
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "06:30:00", T2 = "08:30:00", T3 = "09:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
+  )
+  overlap_win <- list(broad = c("06:00", "10:00"), mid = c("08:00", "09:00"))
+
+  # Trip start method:
+  expect_error(
+    rt2s_obs_headways(
+      ev,
+      windows = overlap_win,
+      method = "trip_start",
+      strict_within_window = TRUE
+    ),
+    "requires non-overlapping configured windows"
+  )
+  legacy_ts <- rt2s_obs_headways(
+    ev,
+    windows = overlap_win,
+    method = "trip_start",
+    strict_within_window = FALSE
+  )
+  expect_true(nrow(legacy_ts) > 0L)
+
+  # Passage method:
+  expect_error(
+    rt2s_obs_headways(
+      ev,
+      windows = overlap_win,
+      method = "passage",
+      reference_stops = "S1",
+      strict_within_window = TRUE
+    ),
+    "requires non-overlapping configured windows"
+  )
+  legacy_ps <- rt2s_obs_headways(
+    ev,
+    windows = overlap_win,
+    method = "passage",
+    reference_stops = "S1",
+    strict_within_window = FALSE
+  )
+  expect_true(nrow(legacy_ps) > 0L)
+})
+
+test_that("strict_within_window handles windows = NULL and edge cases", {
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:00:00", T3 = "08:00:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
+  )
+
+  # windows = NULL with strict_within_window = TRUE -> window = "all"
+  strict_null_ts <- rt2s_obs_headways(
+    ev,
+    windows = NULL,
+    method = "trip_start",
+    strict_within_window = TRUE
+  )
+  expect_identical(strict_null_ts$window, "all")
+  # T2 and T3 are at same time (0s headway) -> filtered out; only T1->T2 (3600s) counted
+  expect_identical(strict_null_ts$n_headways, 1L)
+  expect_identical(strict_null_ts$headway_median, 3600L)
+
+  strict_null_ps <- rt2s_obs_headways(
+    ev,
+    windows = NULL,
+    method = "passage",
+    reference_stops = "S1",
+    strict_within_window = TRUE
+  )
+  expect_identical(strict_null_ps$window, "all")
+
+  # Passage method across midnight with strict_within_window = TRUE:
+  ev1 <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "23:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300))
+  )
+  ev2 <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T2 = "00:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T2 = c(0, 300))
+  )
+  ev2$arrival_time <- ev2$arrival_time + 86400
+  ev2$departure_time <- ev2$departure_time + 86400
+  ev_night <- data.table::rbindlist(list(ev1, ev2))
+
+  strict_night_ps <- rt2s_obs_headways(
+    ev_night,
+    windows = list(overnight = c("22:00", "26:00")),
+    method = "passage",
+    reference_stops = "S1",
+    strict_within_window = TRUE
+  )
+  expect_identical(nrow(strict_night_ps), 1L)
+  expect_identical(strict_night_ps$window, "overnight")
+  expect_identical(strict_night_ps$headway_median, 3600L)
+})
+
+
+test_that("reserved 'other' is rejected before empty-passage short-circuiting", {
+  expect_error(
+    rt2s_obs_headways(
+      make_events_skipped_only_trips(),
+      windows = list(other = c("06:00", "09:00")),
+      method = "passage"
+    ),
+    "Window name 'other' is reserved"
+  )
+})
+
+test_that("strict mode rejects one reversed window for both headway methods", {
+  ev <- make_events_from_offsets(
+    route = "R1", direction_id = 0L, date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:00:00"), stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300))
+  )
+  bad <- list(am = c("09:00", "06:00"))
+  expect_error(
+    rt2s_obs_headways(ev, windows = bad, strict_within_window = TRUE),
+    "must be strictly after"
+  )
+  expect_error(
+    rt2s_obs_headways(
+      ev, windows = bad, method = "passage", reference_stops = "S1",
+      strict_within_window = TRUE
+    ),
+    "must be strictly after"
+  )
+})
+
+test_that("strict mode retains later-window gaps and honours half-open boundaries", {
+  ev <- make_events_from_offsets(
+    route = "R1", direction_id = 0L, date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00", T3 = "09:00:00", T4 = "10:00:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300), T4 = c(0, 300))
+  )
+  win <- list(am = c("06:00", "09:00"), later = c("09:00", "12:00"))
+  trip_start <- rt2s_obs_headways(ev, windows = win, strict_within_window = TRUE)
+  data.table::setorder(trip_start, window)
+  expect_identical(trip_start$window, c("am", "later"))
+  expect_identical(trip_start$headway_median, c(5400L, 3600L))
+
+  passage <- rt2s_obs_headways(
+    ev, windows = win, method = "passage", reference_stops = "S1",
+    strict_within_window = TRUE
+  )
+  data.table::setorder(passage, window)
+  expect_identical(passage$window, c("am", "later"))
+  expect_identical(passage$headway_median, c(5400L, 3600L))
+})
+
+test_that("strict window validation detects overnight overlap and accepts adjacency", {
+  expect_error(
+    check_strict_windows(list(overnight = c("23:00", "26:00"), after = c("25:00", "27:00"))),
+    "requires non-overlapping configured windows"
+  )
+  expect_silent(
+    check_strict_windows(list(overnight = c("23:00", "25:00"), after = c("25:00", "27:00")))
+  )
+})
+
+test_that("strict passage mode preserves dwell/revisit collapse and deterministic ties", {
+  dwell <- rt2s_obs_headways(
+    make_events_reference_stop_dwell(), reference_stops = "S1",
+    windows = list(am = c("06:00", "09:00")), min_revisit_gap_s = 300L,
+    method = "passage", strict_within_window = TRUE
+  )
+  expect_identical(dwell$headway_median, 600L)
+  expect_identical(dwell$n_headways, 2L)
+
+  tie <- make_events_from_offsets(
+    route = "R1", direction_id = 0L, date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:00:00", T3 = "08:00:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
+  )
+  tied <- rt2s_obs_headways(
+    tie, windows = list(am = c("06:00", "09:00")), method = "passage",
+    reference_stops = "S1", strict_within_window = TRUE
+  )
+  expect_identical(tied$n_headways, 1L)
+  expect_identical(tied$headway_median, 3600L)
+})

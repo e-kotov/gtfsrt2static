@@ -1,3 +1,24 @@
+# gtfsrt2static 0.7.0
+
+* **`rt2s_obs_headways(strict_within_window = FALSE)`** and
+  **`rt2s_frequencies(strict_within_window = FALSE)`** add an opt-in mode for
+  within-window headway estimation. When set to `TRUE`, trip starts or
+  reference-stop passages are assigned to their service window before computing
+  inter-event intervals, discarding intervals that cross a configured window
+  boundary. Unassigned events are excluded before grouping. `strict_within_window`
+  is appended at the end of `rt2s_frequencies()` (after `extra_trips`) to preserve
+  positional stability with legacy versions. Configured windows must be valid and
+  pairwise non-overlapping under `strict_within_window = TRUE`.
+
+* **Breaking change:** `"other"` is now a reserved window name for unassigned
+  service times. `rt2s_time_window()` rejects it even though that public function
+  accepted it in 0.6.0; `rt2s_obs_headways()`, `rt2s_frequencies()` and `rt2s_baseline_headways()` reject it
+  at their public boundaries, including eventless/empty-input paths.
+  For valid callers that pass well-formed windows and do not define the newly
+  reserved `"other"` name, `strict_within_window = FALSE` preserves exact
+  byte-identical 0.6.0 behavior. Invalid calls may now report the earlier
+  windows-validation error.
+
 # gtfsrt2static 0.6.0
 
 `rt2s_frequencies()` no longer lets `events` silently bound what the feed

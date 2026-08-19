@@ -1586,3 +1586,307 @@ test_that("service_dates is validated", {
   bad(as.Date(c("2026-07-14", NA)), "non-empty vector of dates")
   expect_error(supplied_feeds(service_dates = NULL), "no service span")
 })
+
+test_that("rt2s_frequencies validates strict_within_window", {
+  expect_error(
+    rt2s_frequencies(
+      make_events_clean(),
+      windows = list(am_peak = c("06:00", "09:00")),
+      strict_within_window = "invalid"
+    ),
+    "'strict_within_window' must be TRUE or FALSE"
+  )
+})
+
+test_that("rt2s_frequencies forwards strict_within_window to headway estimation", {
+  # 3 trips:
+  # T1 @ 07:00:00 (am_peak)
+  # T2 @ 08:30:00 (am_peak)
+  # T3 @ 09:30:00 (midday)
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00", T3 = "09:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
+  )
+  win <- list(am_peak = c("06:00", "09:00"), midday = c("09:00", "12:00"))
+  st <- data.frame(
+    stop_id = c("S1", "S2"),
+    stop_name = c("Stop 1", "Stop 2"),
+    stop_lat = c(40.0, 40.1),
+    stop_lon = c(-74.0, -74.1),
+    stringsAsFactors = FALSE
+  )
+  ag <- list(name = "Agency", url = "https://example.com", timezone = "UTC")
+
+  # Under strict_within_window = FALSE (default):
+  # Both am_peak and midday have headways estimated from events, so frequencies.txt has 2 rows
+  legacy_feeds <- rt2s_frequencies(
+    events = ev,
+    windows = win,
+    quantiles = c(median = 0.5),
+    agency = ag,
+    stops = st,
+    strict_within_window = FALSE
+  )
+  expect_identical(nrow(legacy_feeds$median$frequencies), 2L)
+
+  # Under strict_within_window = TRUE:
+  # am_peak has 1 headway (5400s).
+  # midday has only 1 trip start -> no headway can be computed within window.
+  # In observed mode, groups with no usable headway are not candidates, so only am_peak is emitted.
+  strict_feeds <- rt2s_frequencies(
+    events = ev,
+    windows = win,
+    quantiles = c(median = 0.5),
+    agency = ag,
+    stops = st,
+    strict_within_window = TRUE
+  )
+  expect_identical(nrow(strict_feeds$median$frequencies), 1L)
+  expect_identical(strict_feeds$median$frequencies$headway_secs, 5400L)
+  grid <- rt2s_resolved_grid(strict_feeds)
+  expect_identical(grid$window, c("am_peak", "midday"))
+  expect_identical(grid$emitted, c(TRUE, FALSE))
+  expect_identical(
+    grid[window == "midday", drop_reason], "no_within_window_headway"
+  )
+
+  # In baseline-anchored mode with headway_groups supplied:
+  # am_peak estimates 5400s; midday has no valid within-window headway from events,
+  # so it becomes a candidate with no resolvable headway and drops with "no_headway".
+  expect_warning(
+    anchored_strict <- rt2s_frequencies(
+      events = ev,
+      windows = win,
+      quantiles = c(median = 0.5),
+      baseline = make_baseline_freq(),
+      pattern_source = "baseline",
+      scaling = make_scaling("median", 1, window = names(win)),
+      headway_groups = make_headway_groups(window = names(win)),
+      service_dates = as.Date("2026-07-14"),
+      strict_within_window = TRUE
+    ),
+    "no resolvable headway"
+  )
+  expect_identical(nrow(anchored_strict$median$frequencies), 1L)
+  grid_anchored <- rt2s_resolved_grid(anchored_strict)
+  expect_identical(grid_anchored[window == "am_peak", emitted], TRUE)
+  expect_identical(grid_anchored[window == "midday", emitted], FALSE)
+  expect_identical(grid_anchored[window == "midday", drop_reason], "no_headway")
+})
+
+test_that("rt2s_frequencies forwards strict_within_window = TRUE with headway_method = 'passage'", {
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00", T3 = "09:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
+  )
+  win <- list(am_peak = c("06:00", "09:00"), midday = c("09:00", "12:00"))
+  st <- data.frame(
+    stop_id = c("S1", "S2"),
+    stop_name = c("Stop 1", "Stop 2"),
+    stop_lat = c(40.0, 40.1),
+    stop_lon = c(-74.0, -74.1),
+    stringsAsFactors = FALSE
+  )
+  ag <- list(name = "Agency", url = "https://example.com", timezone = "UTC")
+
+  # Under strict_within_window = FALSE (default): 2 headway rows
+  legacy_feeds <- rt2s_frequencies(
+    events = ev,
+    windows = win,
+    quantiles = c(median = 0.5),
+    agency = ag,
+    stops = st,
+    headway_method = "passage",
+    reference_stops = "S1",
+    strict_within_window = FALSE
+  )
+  expect_identical(nrow(legacy_feeds$median$frequencies), 2L)
+
+  # Under strict_within_window = TRUE: only am_peak has 2 passages (5400s) -> 1 row
+  strict_feeds <- rt2s_frequencies(
+    events = ev,
+    windows = win,
+    quantiles = c(median = 0.5),
+    agency = ag,
+    stops = st,
+    headway_method = "passage",
+    reference_stops = "S1",
+    strict_within_window = TRUE
+  )
+  expect_identical(nrow(strict_feeds$median$frequencies), 1L)
+  expect_identical(strict_feeds$median$frequencies$headway_secs, 5400L)
+  grid <- rt2s_resolved_grid(strict_feeds)
+  expect_identical(grid$window, c("am_peak", "midday"))
+  expect_identical(grid$emitted, c(TRUE, FALSE))
+  expect_identical(
+    grid[window == "midday", drop_reason], "no_within_window_headway"
+  )
+})
+
+test_that("rt2s_frequencies maintains positional backwards-compatibility with v0.6.0 callers", {
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300))
+  )
+  win <- list(am_peak = c("06:00", "09:00"))
+  st <- data.frame(
+    stop_id = c("S1", "S2"),
+    stop_name = c("Stop 1", "Stop 2"),
+    stop_lat = c(40.0, 40.1),
+    stop_lon = c(-74.0, -74.1),
+    stringsAsFactors = FALSE
+  )
+  ag <- list(name = "Agency", url = "https://example.com", timezone = "UTC")
+
+  # Full 25-argument positional vector matching v0.6.0 argument order:
+  args_v060 <- list(
+    ev,                                                       # 1: events
+    win,                                                      # 2: windows
+    c(median = 0.5),                                          # 3: quantiles
+    ag,                                                       # 4: agency
+    st,                                                       # 5: stops
+    3L,                                                       # 6: route_type
+    "SVC1",                                                   # 7: service_id
+    NULL,                                                     # 8: service_dates
+    0L,                                                       # 9: exact_times
+    "en",                                                     # 10: feed_lang
+    NULL,                                                     # 11: feed_contact_email
+    NULL,                                                     # 12: feed_contact_url
+    FALSE,                                                    # 13: strict
+    3L * 3600L,                                               # 14: max_headway_secs
+    "trip_start",                                             # 15: headway_method
+    NULL,                                                     # 16: reference_stops
+    600L,                                                     # 17: min_revisit_gap_s
+    NULL,                                                     # 18: baseline
+    "observed",                                               # 19: pattern_source
+    NULL,                                                     # 20: scaling
+    "error",                                                  # 21: scaling_missing
+    NULL,                                                     # 22: headways
+    NULL,                                                     # 23: headway_groups
+    "route_id",                                               # 24: route_key
+    NULL                                                      # 25: extra_trips
+  )
+
+  pos_feed <- do.call(rt2s_frequencies, args_v060)
+  expect_identical(nrow(pos_feed$median$frequencies), 1L)
+  expect_identical(pos_feed$median$frequencies$headway_secs, 5400L)
+
+  # Also test baseline-anchored 25-argument positional call:
+  b <- make_baseline_freq()
+  args_anchored_v060 <- list(
+    ev,                                                       # 1: events
+    win,                                                      # 2: windows
+    c(median = 0.5),                                          # 3: quantiles
+    ag,                                                       # 4: agency
+    st,                                                       # 5: stops
+    3L,                                                       # 6: route_type
+    "SVC1",                                                   # 7: service_id
+    as.Date("2026-07-14"),                                    # 8: service_dates
+    0L,                                                       # 9: exact_times
+    "en",                                                     # 10: feed_lang
+    NULL,                                                     # 11: feed_contact_email
+    NULL,                                                     # 12: feed_contact_url
+    FALSE,                                                    # 13: strict
+    3L * 3600L,                                               # 14: max_headway_secs
+    "trip_start",                                             # 15: headway_method
+    NULL,                                                     # 16: reference_stops
+    600L,                                                     # 17: min_revisit_gap_s
+    b,                                                        # 18: baseline
+    "baseline",                                               # 19: pattern_source
+    make_scaling("median", 1, window = "am_peak"),            # 20: scaling
+    "error",                                                  # 21: scaling_missing
+    NULL,                                                     # 22: headways
+    make_headway_groups(window = "am_peak"),                  # 23: headway_groups
+    "route_id",                                               # 24: route_key
+    NULL                                                      # 25: extra_trips
+  )
+  pos_anchored <- do.call(rt2s_frequencies, args_anchored_v060)
+  expect_identical(nrow(pos_anchored$median$frequencies), 1L)
+  expect_identical(pos_anchored$median$frequencies$headway_secs, 5400L)
+})
+
+test_that("rt2s_frequencies enforces window rules", {
+  ev <- make_events_from_offsets(
+    route = "R1",
+    direction_id = 0L,
+    date = "2026-07-14",
+    starts = c(T1 = "07:00:00", T2 = "08:30:00"),
+    stops = c("S1", "S2"),
+    offsets = list(T1 = c(0, 300), T2 = c(0, 300))
+  )
+  st <- data.frame(
+    stop_id = c("S1", "S2"),
+    stop_name = c("Stop 1", "Stop 2"),
+    stop_lat = c(40.0, 40.1),
+    stop_lon = c(-74.0, -74.1),
+    stringsAsFactors = FALSE
+  )
+  ag <- list(name = "Agency", url = "https://example.com", timezone = "UTC")
+
+  # Window named 'other' errors
+  expect_error(
+    rt2s_frequencies(
+      events = ev,
+      windows = list(other = c("06:00", "09:00")),
+      agency = ag,
+      stops = st
+    ),
+    "Window name 'other' is reserved"
+  )
+
+  # Overlapping windows error under strict_within_window = TRUE
+  overlap_win <- list(broad = c("06:00", "10:00"), mid = c("08:00", "09:00"))
+  expect_error(
+    rt2s_frequencies(
+      events = ev,
+      windows = overlap_win,
+      agency = ag,
+      stops = st,
+      strict_within_window = TRUE
+    ),
+    "requires non-overlapping configured windows"
+  )
+
+  # Overlapping windows succeed under strict_within_window = FALSE
+  feed_overlap <- rt2s_frequencies(
+    events = ev,
+    windows = overlap_win,
+    agency = ag,
+    stops = st,
+    strict_within_window = FALSE
+  )
+  expect_identical(nrow(feed_overlap$median$frequencies), 1L)
+})
+
+
+test_that("rt2s_frequencies validates windows before eventless bypasses", {
+  expect_error(
+    supplied_feeds(windows = list(other = c("06:00", "09:00"))),
+    "Window name 'other' is reserved"
+  )
+  for (strict in c(FALSE, TRUE)) {
+    expect_error(
+      rt2s_frequencies(events = make_events_clean(), strict_within_window = strict),
+      "'windows' must be a non-empty named list"
+    )
+  }
+})
+
+test_that("eventless strict frequency construction warns that headway strictness is inert", {
+  expect_warning(
+    supplied_feeds(strict_within_window = TRUE),
+    "no headway-estimation effect when 'events' is NULL"
+  )
+})
