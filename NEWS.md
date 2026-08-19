@@ -1,3 +1,9 @@
+# gtfsrt2static 0.7.1
+
+* **Breaking change (Q3):** `rt2s_obs_headways(strict_within_window = TRUE)` now errors when `windows = NULL`. Previously it silently collapsed to a single `"all"` window and returned a headway; strict mode now requires explicit windows, since a strict interval with no window definition is not a meaningful estimand. Use `windows = list(all = c("00:00","24:00"))` or `strict_within_window = FALSE` for the legacy single-window behaviour.
+
+* **Breaking change (Q1c):** Every window must satisfy `end > start` in all modes, not only under `strict_within_window = TRUE`. `rt2s_time_window()`, `rt2s_obs_headways()`, `rt2s_frequencies()` and `rt2s_baseline_headways()` now error on a reversed window like `c("09:00","06:00")` even when `strict_within_window = FALSE`; previously such a window returned `"other"` for every event and yielded an empty result with a misleading "No baseline trip departs inside any window" message. This makes a typo fail fast in the same way strict mode already did.
+
 # gtfsrt2static 0.7.0
 
 * **`rt2s_obs_headways(strict_within_window = FALSE)`** and

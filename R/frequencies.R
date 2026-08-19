@@ -374,6 +374,16 @@ rt2s_frequencies <- function(
     )
   }
   check_reserved_window_name(windows)
+  # Q1c: end must be after start even when strict=FALSE
+  for (nm in names(windows)) {
+    w <- windows[[nm]]
+    if (length(w) == 2L) {
+      s <- hms_to_secs(w[1]); e <- hms_to_secs(w[2])
+      if (!is.na(s) && !is.na(e) && e <= s) {
+        stop("Window '", nm, "' end time (", w[2], ") must be strictly after start time (", w[1], ").", call. = FALSE)
+      }
+    }
+  }
   check_bool(strict_within_window, "strict_within_window")
   if (strict_within_window) {
     check_strict_windows(windows)

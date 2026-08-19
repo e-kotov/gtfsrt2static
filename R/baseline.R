@@ -313,6 +313,16 @@ rt2s_baseline_headways <- function(
       call. = FALSE
     )
   }
+  check_reserved_window_name(windows)
+  for (nm in names(windows)) {
+    w <- windows[[nm]]
+    if (length(w) == 2L) {
+      s <- hms_to_secs(w[1]); e <- hms_to_secs(w[2])
+      if (!is.na(s) && !is.na(e) && e <= s) {
+        stop("Window '", nm, "' end time (", w[2], ") must be strictly after start time (", w[1], ").", call. = FALSE)
+      }
+    }
+  }
   baseline <- read_gtfs_input(baseline)
   trips <- baseline_trips(baseline, route_key)
   st <- baseline_stop_times(baseline, trips$trip_id)

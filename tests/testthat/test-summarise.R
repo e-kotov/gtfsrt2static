@@ -889,26 +889,15 @@ test_that("strict_within_window handles windows = NULL and edge cases", {
     offsets = list(T1 = c(0, 300), T2 = c(0, 300), T3 = c(0, 300))
   )
 
-  # windows = NULL with strict_within_window = TRUE -> window = "all"
-  strict_null_ts <- rt2s_obs_headways(
-    ev,
-    windows = NULL,
-    method = "trip_start",
-    strict_within_window = TRUE
+  # Q3: windows = NULL with strict_within_window = TRUE now errors (breaking change 0.7.1)
+  expect_error(
+    rt2s_obs_headways(ev, windows = NULL, method = "trip_start", strict_within_window = TRUE),
+    "requires 'windows' to be a non-null"
   )
-  expect_identical(strict_null_ts$window, "all")
-  # T2 and T3 are at same time (0s headway) -> filtered out; only T1->T2 (3600s) counted
-  expect_identical(strict_null_ts$n_headways, 1L)
-  expect_identical(strict_null_ts$headway_median, 3600L)
-
-  strict_null_ps <- rt2s_obs_headways(
-    ev,
-    windows = NULL,
-    method = "passage",
-    reference_stops = "S1",
-    strict_within_window = TRUE
+  expect_error(
+    rt2s_obs_headways(ev, windows = NULL, method = "passage", reference_stops = "S1", strict_within_window = TRUE),
+    "requires 'windows' to be a non-null"
   )
-  expect_identical(strict_null_ps$window, "all")
 
   # Passage method across midnight with strict_within_window = TRUE:
   ev1 <- make_events_from_offsets(

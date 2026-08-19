@@ -2,7 +2,7 @@ Type: Package
 Package: gtfsrt2static
 Title: Realized Static GTFS Snapshots from GTFS-Realtime and GPS-Derived
     Observations
-Version: 0.7.0
+Version: 0.7.1
 Authors@R: 
     person("Egor", "Kotov", , "kotov.egor@gmail.com", role = c("aut", "cre", "cph"),
            comment = c(ORCID = "0000-0001-6690-5345"))

@@ -424,6 +424,12 @@ rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) 
     if (is.na(s) || is.na(e)) {
       stop("Window '", nm, "' has an unparseable time.", call. = FALSE)
     }
+    if (e <= s) {
+      stop(
+        "Window '", nm, "' end time (", w[2], ") must be strictly after start time (", w[1], ").",
+        call. = FALSE
+      )
+    }
     hit <- !is.na(secs) & is.na(out) & secs >= s & secs < e
     out[hit] <- nm
   }
@@ -443,7 +449,12 @@ check_reserved_window_name <- function(windows) {
 #' Validate that configured windows are pairwise non-overlapping
 #' @noRd
 check_strict_windows <- function(windows) {
-  if (is.null(windows)) return(invisible(NULL))
+  if (is.null(windows)) {
+    stop(
+      "'strict_within_window = TRUE' requires 'windows' to be a non-null named list of c(start, end) time strings.",
+      call. = FALSE
+    )
+  }
   if (!is.list(windows) || is.null(names(windows)) || any(!nzchar(names(windows)))) {
     stop(
       "'windows' must be a named list of c(start, end) time strings.",
@@ -484,6 +495,29 @@ check_strict_windows <- function(windows) {
           call. = FALSE
         )
       }
+    }
+  }
+  invisible(NULL)
+}
+
+#' Validate that each window has start < end regardless of strict (Q1c)
+#' @noRd
+check_window_bounds <- function(windows) {
+  if (is.null(windows)) return(invisible(NULL))
+  if (!is.list(windows) || is.null(names(windows)) || any(!nzchar(names(windows)))) {
+    return(invisible(NULL))
+  }
+  for (nm in names(windows)) {
+    w <- windows[[nm]]
+    if (length(w) != 2L) next
+    s <- hms_to_secs(w[1])
+    e <- hms_to_secs(w[2])
+    if (is.na(s) || is.na(e)) next
+    if (e <= s) {
+      stop(
+        "Window '", nm, "' end time (", w[2], ") must be strictly after start time (", w[1], ").",
+        call. = FALSE
+      )
     }
   }
   invisible(NULL)
@@ -633,6 +667,7 @@ rt2s_obs_headways <- function(
   method <- match.arg(method)
   check_bool(strict_within_window, "strict_within_window")
   check_reserved_window_name(windows)
+  check_window_bounds(windows)
   if (identical(method, "trip_start")) {
     # An argument that cannot apply warns rather than being silently dropped;
     # missing() is what distinguishes "explicitly passed" from "left at default".
