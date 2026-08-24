@@ -1779,7 +1779,12 @@ test_that("rt2s_frequencies maintains positional backwards-compatibility with v0
     NULL                                                      # 25: extra_trips
   )
 
-  pos_feed <- do.call(rt2s_frequencies, args_v060)
+  # Positional v0.6.0 callers supplied passage-only arguments. Their
+  # documented trip-start warning is part of the compatibility contract.
+  expect_warning(
+    pos_feed <- do.call(rt2s_frequencies, args_v060),
+    "'reference_stops', 'min_revisit_gap_s' ignored when headway_method = \"trip_start\"\\."
+  )
   expect_identical(nrow(pos_feed$median$frequencies), 1L)
   expect_identical(pos_feed$median$frequencies$headway_secs, 5400L)
 
@@ -1812,7 +1817,15 @@ test_that("rt2s_frequencies maintains positional backwards-compatibility with v0
     "route_id",                                               # 24: route_key
     NULL                                                      # 25: extra_trips
   )
-  pos_anchored <- do.call(rt2s_frequencies, args_anchored_v060)
+  # Explicit `st` wins over baseline$stops. It deliberately lacks S3, so the
+  # baseline pattern emits the documented coordinate warning for S3.
+  expect_warning(
+    expect_warning(
+      pos_anchored <- do.call(rt2s_frequencies, args_anchored_v060),
+      "'reference_stops', 'min_revisit_gap_s' ignored when headway_method = \"trip_start\"\\."
+    ),
+    "1 stop\\(s\\) have no coordinates \\(spec-required stop_lat/stop_lon are NA\\)"
+  )
   expect_identical(nrow(pos_anchored$median$frequencies), 1L)
   expect_identical(pos_anchored$median$frequencies$headway_secs, 5400L)
 })
