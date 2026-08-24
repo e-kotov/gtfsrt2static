@@ -4,3 +4,6 @@
 .DS_Store
 /doc/
 /Meta/
+*.Rcheck/
+*.tar.gz
+tests/testthat/_problems/
