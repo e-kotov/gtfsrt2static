@@ -6,7 +6,6 @@
 /Meta/
 *.Rcheck/
 *.tar.gz
-tests/testthat/_problems/
 
 # Vignette and knitr residue from building in place (R CMD build output is
 # already covered by /doc/ and /Meta/). Keeps the test-all.slurm dirty guard
