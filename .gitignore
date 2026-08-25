@@ -16,3 +16,7 @@ vignettes/*.pdf
 *.knit.md
 *.utf8.md
 .Renviron
+
+# testthat writes a reprex here for each failing expectation under R CMD check
+# (testthat >= 3.3.0). Generated output, never an input: no test reads it.
+tests/testthat/_problems/

@@ -1,9 +1,0 @@
-# Extracted from test-assemble.R:115
-
-# setup ------------------------------------------------------------------------
-library(testthat)
-test_env <- simulate_test_env(package = "gtfsrt2static", path = "..")
-attach(test_env, warn.conflicts = FALSE)
-
-# test -------------------------------------------------------------------------
-events <- rt2s_events_from_trip_updates(make_updates())
