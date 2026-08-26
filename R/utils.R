@@ -36,9 +36,11 @@ yyyymmdd <- function(d) {
   as.integer(format(as.Date(d), "%Y%m%d"))
 }
 
-#' Format non-negative integer seconds as a GTFS clock string, allowing hours
-#' >= 24 (e.g. 88200 -> "24:30:00"). Used for frequency-trip stop_times, whose
-#' times are offsets from trip start (00:00:00).
+#' Format non-negative integer seconds as a GTFS clock string
+#'
+#' Hours of 24 or more are allowed (88200 becomes "24:30:00"). Used for
+#' frequency-trip stop_times, whose times are offsets from trip start
+#' (00:00:00).
 #'
 #' NA or negative input is a programming error, not a value to encode: silently
 #' producing "NA:NA:NA" (or a negative clock) would ship an invalid GTFS field.
