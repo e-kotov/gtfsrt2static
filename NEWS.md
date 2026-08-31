@@ -1,3 +1,20 @@
+# gtfsrt2static 0.7.2
+
+Documentation, tests and packaging only. **No user-visible behaviour changed**, and no
+function, argument, return value or error message was added, removed or renamed.
+Upgrading from 0.7.1 is optional.
+
+* `secs_to_clock()`'s roxygen block gained a proper title line, so its documentation
+  no longer renders the description as a block quote. The function itself is
+  unchanged and is internal (`@noRd`).
+
+* `tests/testthat/_problems/` reprex files are no longer tracked: they are test
+  output, not scaffolding. `.Rbuildignore` and `.gitignore` updated to match, so a
+  plain `R CMD build` ships the same tree the package's own gates check.
+
+* `test-frequencies.R` now asserts the documented v0.6.0-compatibility warnings
+  instead of letting them pass unexamined.
+
 # gtfsrt2static 0.7.1
 
 * **Breaking change (Q3):** `rt2s_obs_headways(strict_within_window = TRUE)` now errors when `windows = NULL`. Previously it silently collapsed to a single `"all"` window and returned a headway; strict mode now requires explicit windows, since a strict interval with no window definition is not a meaningful estimand. Use `windows = list(all = c("00:00","24:00"))` or `strict_within_window = FALSE` for the legacy single-window behaviour.
