@@ -963,14 +963,21 @@ baseline_agency_id <- function(baseline) {
 #' baseline counterpart are scaffolded. `agency_id` is rewritten to the single
 #' emitted agency so referential integrity holds even when the caller overrode
 #' the agency metadata.
+#'
+#' `route_ids` carries whatever identifier the feed was built on, which is the
+#' baseline's `routes.route_short_name` under `route_key = "route_short_name"`
+#' (see `baseline_route_ref()`). The baseline therefore has to be keyed on the
+#' same column, or nothing matches and every route is scaffolded as a bus.
 #' @noRd
 baseline_routes_table <- function(
   route_ids,
   baseline_routes,
   feed_agency_id,
   route_type,
-  route_type_given
+  route_type_given,
+  route_key = "route_id"
 ) {
+  by_short_name <- identical(route_key, "route_short_name")
   cols <- c(
     "route_id",
     "agency_id",
@@ -994,7 +1001,15 @@ baseline_routes_table <- function(
     return(scaffold(route_ids))
   }
   br <- data.table::as.data.table(baseline_routes)
-  validate_required_columns(br, c("route_id", "route_type"), "baseline routes")
+  validate_required_columns(
+    br,
+    if (by_short_name) {
+      c("route_id", "route_short_name", "route_type")
+    } else {
+      c("route_id", "route_type")
+    },
+    "baseline routes"
+  )
   # Build the columns outside the data.table frame: two of them are optional in
   # the baseline, so guarding them inside j would rely on evaluation order.
   br_id <- as.character(br$route_id)
@@ -1013,8 +1028,52 @@ baseline_routes_table <- function(
     },
     route_type = suppressWarnings(as.integer(br$route_type))
   )
-  br <- unique(br, by = "route_id")
-  br <- br[route_id %in% route_ids]
+  if (by_short_name) {
+    # A blank or NA short name can be matched by nothing, and joining on "" would
+    # attach one arbitrary operator route to every such row: drop them from the
+    # match set so they scaffold through the usual missing-id path.
+    br <- br[!is.na(route_short_name) & nzchar(route_short_name)]
+    br <- br[route_short_name %in% route_ids]
+    # Ordered by route_id so "first wins" is the operator's lowest route_id and
+    # not the incoming row order, which no caller controls.
+    data.table::setorderv(br, "route_id")
+    # Split rather than a data.table by=: the aggregate would need two new column
+    # names, and every symbol used inside j has to be declared in
+    # globalVariables() to keep R CMD check quiet.
+    types_by_short <- split(br$route_type, br$route_short_name)
+    conflicting <- types_by_short[
+      vapply(types_by_short, function(x) length(unique(x)) > 1L, logical(1L))
+    ]
+    if (length(conflicting) > 0L) {
+      shown <- utils::head(conflicting, 3L)
+      warning(
+        length(conflicting),
+        " route_short_name(s) map to baseline routes.txt rows that disagree ",
+        "about route_type; the first row by route_id was kept, e.g. ",
+        paste0(
+          "'",
+          names(shown),
+          "' (",
+          vapply(
+            shown,
+            function(x) paste(unique(x), collapse = "/"),
+            character(1L)
+          ),
+          ")",
+          collapse = ", "
+        ),
+        ".",
+        call. = FALSE
+      )
+    }
+    br <- unique(br, by = "route_short_name")
+    # The emitted route_id under this key IS the short name: that is what
+    # rt2s_frequencies() already wrote into trips.txt.
+    br[, route_id := route_short_name]
+  } else {
+    br <- unique(br, by = "route_id")
+    br <- br[route_id %in% route_ids]
+  }
   br[is.na(route_short_name), route_short_name := route_id]
   br[is.na(route_long_name), route_long_name := ""]
   missing_ids <- setdiff(route_ids, br$route_id)

@@ -807,7 +807,10 @@ rt2s_frequencies <- function(
     baseline_routes = if (anchored) baseline$routes else NULL,
     feed_agency_id = agency_id,
     route_type = route_type,
-    route_type_given = !missing(route_type)
+    route_type_given = !missing(route_type),
+    # 'route_ids' comes from grp$route_id, which is the route_ref of the chosen
+    # key, so the baseline must be matched on that same column.
+    route_key = route_key
   )
 
   trips_out <- unique(grp[, list(

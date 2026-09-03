@@ -335,3 +335,94 @@ test_that("rt2s_baseline_service_dates feeds rt2s_frequencies(service_dates=)", 
   # weekday-only dates leave no gap that calendar.txt does not already express
   expect_false("calendar_dates" %in% names(feeds$median))
 })
+
+# --- baseline_routes_table() under each route_key (BUG-1) --------------------
+# Direct tests of the internal builder: the emitted route_id is the short name
+# under route_key = "route_short_name", so the baseline must be matched on
+# route_short_name rather than on route_id.
+
+test_that("baseline_routes_table scaffolds a short name with no baseline row", {
+  br <- data.frame(
+    route_id = c("R1", "R3"),
+    route_short_name = c("1", NA_character_),
+    route_long_name = c("Baseline Tram", "Nameless"),
+    route_type = c(0L, 2L),
+    stringsAsFactors = FALSE
+  )
+  expect_warning(
+    out <- gtfsrt2static:::baseline_routes_table(
+      route_ids = c("1", "9"),
+      baseline_routes = br,
+      feed_agency_id = "AGB",
+      route_type = 3L,
+      route_type_given = TRUE,
+      route_key = "route_short_name"
+    ),
+    "scaffolded as route_type 3, e.g. '9'"
+  )
+  # "1" inherits; "9" has no baseline counterpart and takes the caller default.
+  # R3's NA short name is unmatchable and never joins on "".
+  expect_identical(out$route_id, c("1", "9"))
+  expect_identical(out$route_type, c(0L, 3L))
+  expect_identical(out$route_long_name, c("Baseline Tram", ""))
+  expect_identical(out$agency_id, c("AGB", "AGB"))
+})
+
+test_that("baseline_routes_table collapses a duplicated short name", {
+  # Row order puts the conflicting R2 first, so a rule that kept the incoming
+  # order rather than the lowest route_id would emit route_type 3.
+  br <- data.frame(
+    route_id = c("R2", "R1"),
+    route_short_name = c("1", "1"),
+    route_long_name = c("Bus copy", "Baseline Tram"),
+    route_type = c(3L, 0L),
+    stringsAsFactors = FALSE
+  )
+  expect_warning(
+    out <- gtfsrt2static:::baseline_routes_table(
+      route_ids = "1",
+      baseline_routes = br,
+      feed_agency_id = "AGB",
+      route_type = 3L,
+      route_type_given = TRUE,
+      route_key = "route_short_name"
+    ),
+    "'1' \\(0/3\\)"
+  )
+  expect_identical(nrow(out), 1L)
+  expect_identical(out$route_id, "1")
+  expect_identical(out$route_type, 0L)
+  expect_identical(out$route_long_name, "Baseline Tram")
+})
+
+test_that("baseline_routes_table under route_key = \"route_id\" is unchanged", {
+  br <- data.frame(
+    route_id = c("R1", "R2"),
+    route_short_name = c("1", "2"),
+    route_long_name = c("Baseline Tram", "Baseline Bus"),
+    route_type = c(0L, 3L),
+    stringsAsFactors = FALSE
+  )
+  out <- gtfsrt2static:::baseline_routes_table(
+    route_ids = c("R1", "R2"),
+    baseline_routes = br,
+    feed_agency_id = "AGB",
+    route_type = 3L,
+    route_type_given = TRUE
+  )
+  expect_identical(out$route_id, c("R1", "R2"))
+  expect_identical(out$route_type, c(0L, 3L))
+  expect_identical(out$route_short_name, c("1", "2"))
+  # A short name that is not a route_id matches nothing under this key.
+  expect_warning(
+    gtfsrt2static:::baseline_routes_table(
+      route_ids = "1",
+      baseline_routes = br,
+      feed_agency_id = "AGB",
+      route_type = 3L,
+      route_type_given = TRUE,
+      route_key = "route_id"
+    ),
+    "scaffolded as route_type 3, e.g. '1'"
+  )
+})

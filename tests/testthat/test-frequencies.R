@@ -1275,7 +1275,11 @@ test_that("a supplied group with no events is emitted (the FR-7 reproducer)", {
     as.data.frame(key)[, c("route_ref", "direction_id", "window")]
   )
 
-  feeds <- suppressWarnings(rt2s_frequencies(
+  # No suppressWarnings(): this call emits none. It used to emit the "scaffolded
+  # as route_type" warning, because route_ids held short names and routes.txt was
+  # keyed on route_id (BUG-1); swallowing it hid that the emitted route inherited
+  # nothing from the baseline.
+  feeds <- rt2s_frequencies(
     events = events, windows = windows, quantiles = scenarios,
     baseline = baseline, pattern_source = "baseline",
     route_key = "route_short_name",
@@ -1284,7 +1288,7 @@ test_that("a supplied group with no events is emitted (the FR-7 reproducer)", {
     headways = as.data.frame(data.table::copy(key)[, headway_secs := 900L]),
     headway_groups = groups,
     scaling_missing = "drop"
-  ))
+  )
   grid <- rt2s_resolved_grid(feeds)
 
   # The pm group is present in the grid and emitted, in both scenarios.
@@ -1298,6 +1302,11 @@ test_that("a supplied group with no events is emitted (the FR-7 reproducer)", {
   # caller-driven: no observation ever fell in it.
   expect_identical(sort(feeds$median$frequencies$headway_secs), c(900L, 900L))
   expect_identical(unique(grid$headway_source), "override")
+  # routes.txt is inherited from the baseline row whose route_short_name is the
+  # emitted route_id; a scaffolded row would carry an empty route_long_name.
+  expect_identical(feeds$median$routes$route_id, "L1")
+  expect_identical(feeds$median$routes$route_type, 3L)
+  expect_identical(feeds$median$routes$route_long_name, "Probe line")
 })
 
 test_that("a supplied group with a ratio and an override headway needs no events", {
@@ -1902,4 +1911,71 @@ test_that("eventless strict frequency construction warns that headway strictness
     supplied_feeds(strict_within_window = TRUE),
     "no headway-estimation effect when 'events' is NULL"
   )
+})
+
+# --- route_key and the emitted routes.txt (BUG-1) ----------------------------
+# Under route_key = "route_short_name" the emitted route_id IS the short name,
+# so routes.txt has to be keyed on route_short_name to inherit anything at all.
+
+test_that("route_key = \"route_short_name\" inherits routes.txt by short name", {
+  b <- make_baseline_freq_two_routes()
+  feeds <- rt2s_frequencies(
+    events = NULL,
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    baseline = b,
+    pattern_source = "baseline",
+    route_key = "route_short_name",
+    service_dates = as.Date("2026-07-14"),
+    scaling = make_scaling("median", 1, route_ref = c("1", "2")),
+    headways = make_headway_overrides("median", 600L, route_ref = c("1", "2")),
+    headway_groups = make_headway_groups(route_ref = c("1", "2"))
+  )
+  routes <- feeds$median$routes
+  expect_identical(routes$route_id, c("1", "2"))
+  # The tram keeps route_type 0; scaffolding would emit 3 for both.
+  expect_identical(routes$route_type, c(0L, 3L))
+  expect_identical(routes$route_short_name, c("1", "2"))
+  expect_identical(routes$route_long_name, c("Baseline Tram", "Baseline Bus"))
+  expect_identical(routes$agency_id, c("AGB", "AGB"))
+  expect_identical(sort(unique(feeds$median$trips$route_id)), c("1", "2"))
+})
+
+test_that("route_key = \"short_name\" emits no scaffold warning when matched", {
+  b <- make_baseline_freq_two_routes()
+  expect_no_warning(
+    rt2s_frequencies(
+      events = NULL,
+      windows = list(am_peak = c("06:00", "09:00")),
+      quantiles = c(median = 0.5),
+      baseline = b,
+      pattern_source = "baseline",
+      route_key = "route_short_name",
+      service_dates = as.Date("2026-07-14"),
+      scaling = make_scaling("median", 1, route_ref = c("1", "2")),
+      headways = make_headway_overrides("median", 600L, route_ref = c("1", "2")),
+      headway_groups = make_headway_groups(route_ref = c("1", "2"))
+    ),
+    message = "scaffolded as route_type"
+  )
+})
+
+test_that("route_key = \"route_id\" still inherits routes.txt by route_id", {
+  b <- make_baseline_freq_two_routes()
+  feeds <- rt2s_frequencies(
+    events = NULL,
+    windows = list(am_peak = c("06:00", "09:00")),
+    quantiles = c(median = 0.5),
+    baseline = b,
+    pattern_source = "baseline",
+    service_dates = as.Date("2026-07-14"),
+    scaling = make_scaling("median", 1, route_ref = c("R1", "R2")),
+    headways = make_headway_overrides("median", 600L, route_ref = c("R1", "R2")),
+    headway_groups = make_headway_groups(route_ref = c("R1", "R2"))
+  )
+  routes <- feeds$median$routes
+  expect_identical(routes$route_id, c("R1", "R2"))
+  expect_identical(routes$route_type, c(0L, 3L))
+  expect_identical(routes$route_short_name, c("1", "2"))
+  expect_identical(routes$route_long_name, c("Baseline Tram", "Baseline Bus"))
 })

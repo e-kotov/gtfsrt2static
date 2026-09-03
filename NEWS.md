@@ -1,3 +1,21 @@
+# gtfsrt2static 0.8.0
+
+## Bug fixes
+
+* `rt2s_frequencies(route_key = "route_short_name")` now inherits `routes.txt` rows
+  by short name. Under that key the emitted `route_id` is the baseline's
+  `route_short_name`, but the emitted `routes.txt` was still matched against the
+  baseline's `route_id`, so nothing ever matched: every route was scaffolded with
+  the warning "N emitted route(s) have no baseline routes.txt row and were
+  scaffolded as route_type 3", losing the operator's `route_long_name` and
+  labelling trams, metros and rail as buses. Emitted routes now inherit
+  `route_long_name` and `route_type` from the baseline row carrying that short
+  name (`agency_id` is still rewritten to the emitted feed's agency). Baseline
+  rows with a missing or empty `route_short_name` are excluded from the match, and
+  two `route_id`s sharing one short name collapse to the first by `route_id`, with
+  a warning naming the short name and the types when they disagree about
+  `route_type`. `route_key = "route_id"` is unaffected.
+
 # gtfsrt2static 0.7.2
 
 Documentation, tests and packaging only. **No user-visible behaviour changed**, and no

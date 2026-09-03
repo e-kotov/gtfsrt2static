@@ -637,6 +637,64 @@ make_baseline_freq <- function() {
   )
 }
 
+#' Two-route baseline whose routes differ in route_type.
+#'
+#' R1 is short name "1" and route_type 0 (tram); R2 is short name "2" and
+#' route_type 3 (bus). The types differ on purpose: a routes.txt built by
+#' scaffolding rather than by inheritance emits 3 for both, so the tram row is
+#' the falsifier. Both routes carry the same three-stop pattern, so only the
+#' identifiers distinguish them.
+make_baseline_freq_two_routes <- function() {
+  b <- make_baseline_freq()
+  b$routes <- data.frame(
+    route_id = c("R1", "R2"),
+    agency_id = "AGB",
+    route_short_name = c("1", "2"),
+    route_long_name = c("Baseline Tram", "Baseline Bus"),
+    route_type = c(0L, 3L),
+    stringsAsFactors = FALSE
+  )
+  b$trips <- rbind(
+    b$trips,
+    data.frame(
+      route_id = "R2",
+      service_id = "weekday",
+      trip_id = c("U1", "U2", "U3"),
+      direction_id = 0L,
+      stringsAsFactors = FALSE
+    )
+  )
+  st <- function(trip, arrivals, departures) {
+    data.frame(
+      trip_id = trip,
+      arrival_time = arrivals,
+      departure_time = departures,
+      stop_id = c("S1", "S2", "S3"),
+      stop_sequence = seq(4L, length.out = 3L),
+      stringsAsFactors = FALSE
+    )
+  }
+  b$stop_times <- rbind(
+    b$stop_times,
+    st(
+      "U1",
+      c("06:04:30", "06:07:00", "06:09:30"),
+      c("06:05:00", "06:07:30", "06:10:00")
+    ),
+    st(
+      "U2",
+      c("06:19:30", "06:22:00", "06:24:30"),
+      c("06:20:00", "06:22:30", "06:25:00")
+    ),
+    st(
+      "U3",
+      c("06:34:30", "06:37:00", "06:39:30"),
+      c("06:35:00", "06:37:30", "06:40:00")
+    )
+  )
+  b
+}
+
 #' Baseline trips.txt with no direction_id column at all.
 make_baseline_no_direction <- function() {
   b <- make_baseline_freq()
