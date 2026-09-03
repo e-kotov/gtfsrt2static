@@ -30,7 +30,8 @@ rt2s_frequencies(
   headway_groups = NULL,
   route_key = c("route_id", "route_short_name"),
   extra_trips = NULL,
-  strict_within_window = FALSE
+  strict_within_window = FALSE,
+  closed_last = FALSE
 )
 }
 \arguments{
@@ -256,6 +257,11 @@ supplies the extra trips, so it already owns those ids.}
 \item{strict_within_window}{Passed to \code{\link{rt2s_obs_headways}} when
 estimating headways from events. Logical; default \code{FALSE}. When \code{TRUE},
 configured windows must be pairwise non-overlapping.}
+
+\item{closed_last}{Logical; when \code{TRUE} the last window in list order is
+closed on its end, so an event exactly on it is inside that window rather
+than unassigned. Passed to \code{\link{rt2s_obs_headways}}. See
+\code{\link{rt2s_time_window}}.}
 }
 \value{
 A named list of gtfsio-convention feed objects, one per quantile

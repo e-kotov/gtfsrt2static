@@ -426,3 +426,29 @@ test_that("baseline_routes_table under route_key = \"route_id\" is unchanged", {
     "scaffolded as route_type 3, e.g. '1'"
   )
 })
+
+test_that("rt2s_baseline_headways forwards closed_last to the window assignment", {
+  # make_baseline_freq() first departures: 06:00, 06:10, 06:25, 06:35, 06:50.
+  # Window am = ["06:00", "06:50"), so T5's 06:50:00 start is the closing second.
+  #   closed_last = FALSE -> T1..T4: gaps 600, 900, 600        -> median 600, n = 3
+  #   closed_last = TRUE  -> T1..T5: gaps 600, 900, 600, 900   -> median 750, n = 4
+  w <- list(am = c("06:00", "06:50"))
+  open <- rt2s_baseline_headways(make_baseline_freq(), windows = w)
+  expect_identical(open$window, "am")
+  expect_identical(open$headway_secs, 600L)
+  expect_identical(open$n_sched_trips, 3L)
+
+  closed <- rt2s_baseline_headways(
+    make_baseline_freq(),
+    windows = w,
+    closed_last = TRUE
+  )
+  expect_identical(closed$window, "am")
+  expect_identical(closed$headway_secs, 750L)
+  expect_identical(closed$n_sched_trips, 4L)
+
+  expect_error(
+    rt2s_baseline_headways(make_baseline_freq(), windows = w, closed_last = "yes"),
+    "'closed_last' must be TRUE or FALSE"
+  )
+})

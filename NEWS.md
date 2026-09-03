@@ -1,5 +1,37 @@
 # gtfsrt2static 0.8.0
 
+## New arguments
+
+All of the following are default-off: a caller who sets none of them gets exactly
+the 0.7.2 behaviour.
+
+* `rt2s_time_window()` gained `closed_last`. With `closed_last = TRUE` the **last
+  window in list order**, and only that one, is closed on its end - `[start, end]`
+  instead of `[start, end)`. Every earlier window stays half-open, so a time on an
+  earlier window's end still falls into whichever later window starts there, and
+  "first match in list order wins" is unchanged. The argument has no effect when
+  `windows` is `NULL`. The default remains `FALSE`, i.e. every window half-open.
+
+* `closed_last` is forwarded, with the same default and meaning, by
+  `rt2s_obs_headways()`, `rt2s_baseline_headways()` and `rt2s_frequencies()`, so a
+  departure or passage on the configured span's closing second can be kept without
+  restating the windows. The `frequencies.txt` `start_time`/`end_time` written for
+  a window are still its configured bounds: closedness decides which window a
+  departure is assigned to, not the interval the feed advertises.
+
+* `rt2s_time_window()` also gained `na_label`, the label returned wherever `x` is
+  `NA`. It must be a length-1 character vector (`NA_character_` allowed), may not
+  equal a window name, and applies in the `windows = NULL` branch too. The default `NA_character_` keeps
+  `NA` in / `NA` out; `na_label = "other"` folds missing times in with times that
+  match no window. `na_label` is deliberately **not** forwarded by the three
+  callers above: a run with an unknown start time has no place in a headway table.
+
+  Why: a downstream workflow classifies departures with a last-closed rule and
+  labels missing times `"other"`, and seven weekday first departures in its feed
+  land exactly on the last window's closing second - lost under the half-open
+  reading. `rt2s_time_window(closed_last = TRUE, na_label = "other")` now
+  reproduces that rule exactly, so the local copy can be deleted.
+
 ## Bug fixes
 
 * `rt2s_frequencies(route_key = "route_short_name")` now inherits `routes.txt` rows

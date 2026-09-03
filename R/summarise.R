@@ -374,7 +374,8 @@ compute_stop_order <- function(dt_off) {
 #'   The window name \code{"other"} is reserved for unassigned service times.
 #'   End values may exceed 24:00 for overnight windows, e.g.
 #'   \code{c("22:00", "26:00")} (requires \code{service_date}). Intervals are
-#'   half-open \code{[start, end)} and the first matching window in list order
+#'   half-open \code{[start, end)} - unless \code{closed_last = TRUE}, which
+#'   closes the last window only - and the first matching window in list order
 #'   wins, so overlaps resolve deterministically. \code{NULL} (default) places
 #'   every non-missing time in a single \code{"all"} window.
 #' @param service_date Optional \code{Date} vector (recycled to \code{x}). When
@@ -384,9 +385,25 @@ compute_stop_order <- function(dt_off) {
 #'   GTFS >24:00:00 convention. Without it, POSIXct uses wall-clock time-of-day.
 #' @param tz Timezone of the service day (defaults to \code{x}'s own timezone,
 #'   else "UTC"). Only used when \code{service_date} is supplied.
+#' @param closed_last Logical. When \code{FALSE} (default), every window is
+#'   half-open \code{[start, end)}, so a time on the last window's end matches
+#'   no window and becomes \code{"other"}. When \code{TRUE}, the \emph{last
+#'   window in list order} - and only that one - becomes closed,
+#'   \code{[start, end]}; every earlier window stays half-open, so a time on an
+#'   earlier window's end still belongs to whichever later window starts there.
+#'   First match in list order still wins. Has no effect when \code{windows} is
+#'   \code{NULL}. Use it when the configured windows are meant to cover a
+#'   service span inclusive of its closing second.
+#' @param na_label Length-1 character (\code{NA_character_} by default) used as
+#'   the label wherever \code{x} is \code{NA}. The default reproduces the
+#'   \code{NA} in / \code{NA} out behaviour. \code{"other"} is allowed - it is
+#'   the unassigned label, not a window name - so \code{na_label = "other"}
+#'   folds missing times in with times that match no window. It may not equal
+#'   a window name. Applies in the \code{windows = NULL} branch too.
 #' @return Character vector the length of \code{x}: the window name,
-#'   \code{"other"} for a time matching no window (never produced when
-#'   \code{windows} is \code{NULL}), and \code{NA} where \code{x} is \code{NA}.
+#'   \code{"other"} for a non-missing time matching no window (never produced
+#'   when \code{windows} is \code{NULL}), and \code{na_label} - by default
+#'   \code{NA} - where \code{x} is \code{NA}.
 #' @examples
 #' rt2s_time_window(
 #'   as.POSIXct(c("2026-07-14 07:30:00", "2026-07-14 12:00:00"), tz = "UTC"),
@@ -398,12 +415,27 @@ compute_stop_order <- function(dt_off) {
 #'   list(overnight = c("22:00", "26:00")),
 #'   service_date = as.Date("2026-07-14")
 #' )
+#' # A departure on the last window's closing second, kept by closed_last:
+#' rt2s_time_window(
+#'   as.POSIXct("2026-07-14 23:00:00", tz = "UTC"),
+#'   list(am_peak = c("06:00", "09:00"), pm_peak = c("16:00", "23:00")),
+#'   closed_last = TRUE
+#' )
 #' @export
-rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) {
+rt2s_time_window <- function(
+  x,
+  windows = NULL,
+  service_date = NULL,
+  tz = NULL,
+  closed_last = FALSE,
+  na_label = NA_character_
+) {
+  check_bool(closed_last, "closed_last")
+  check_na_label(na_label)
   secs <- time_of_day_secs(x, service_date = service_date, tz = tz)
   if (is.null(windows)) {
     out <- rep("all", length(secs))
-    out[is.na(secs)] <- NA_character_
+    out[is.na(secs)] <- na_label
     return(out)
   }
   if (!is.list(windows) || is.null(names(windows)) || any(!nzchar(names(windows)))) {
@@ -413,9 +445,18 @@ rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) 
     )
   }
   check_reserved_window_name(windows)
+  if (!is.na(na_label) && na_label %in% names(windows)) {
+    stop(
+      "'na_label' (\"", na_label, "\") is also a window name; a missing time ",
+      "would be indistinguishable from a time in that window.",
+      call. = FALSE
+    )
+  }
   out <- rep(NA_character_, length(secs))
-  for (nm in names(windows)) {
-    w <- windows[[nm]]
+  nms <- names(windows)
+  for (i in seq_along(nms)) {
+    nm <- nms[i]
+    w <- windows[[i]]
     if (length(w) != 2L) {
       stop("Window '", nm, "' must be a length-2 c(start, end).", call. = FALSE)
     }
@@ -430,11 +471,28 @@ rt2s_time_window <- function(x, windows = NULL, service_date = NULL, tz = NULL) 
         call. = FALSE
       )
     }
-    hit <- !is.na(secs) & is.na(out) & secs >= s & secs < e
+    # Only the LAST window in list order may close on its end; every earlier
+    # window stays half-open so a boundary shared with a following window still
+    # resolves to that following window.
+    below_end <- if (closed_last && i == length(nms)) secs <= e else secs < e
+    hit <- !is.na(secs) & is.na(out) & secs >= s & below_end
     out[hit] <- nm
   }
   out[is.na(out) & !is.na(secs)] <- "other"
+  out[is.na(secs)] <- na_label
   out
+}
+
+#' Validate the label applied to missing times
+#' @noRd
+check_na_label <- function(x) {
+  if (!is.character(x) || length(x) != 1L) {
+    stop(
+      "'na_label' must be a length-1 character vector (NA_character_ allowed).",
+      call. = FALSE
+    )
+  }
+  invisible(x)
 }
 
 #' Reject the reserved unassigned-window label at public boundaries
@@ -642,6 +700,9 @@ rt2s_obs_stop_order <- function(events) {
 #'   intervals crossing a window boundary are discarded, and events in unassigned
 #'   times are ignored. Configured windows must be pairwise non-overlapping under
 #'   \code{strict_within_window = TRUE}.
+#' @param closed_last Logical; when \code{TRUE} the last window in list order is
+#'   closed on its end, so an event exactly on it is inside that window rather
+#'   than unassigned. See \code{\link{rt2s_time_window}}.
 #' @return A data.table with columns \code{route_ref}, \code{direction_id},
 #'   \code{window}, one \code{headway_<name>} column per quantile (integer
 #'   seconds), and \code{n_headways} (count of headways summarised). Groups with
@@ -662,10 +723,12 @@ rt2s_obs_headways <- function(
   method = c("trip_start", "passage"),
   reference_stops = NULL,
   min_revisit_gap_s = 600L,
-  strict_within_window = FALSE
+  strict_within_window = FALSE,
+  closed_last = FALSE
 ) {
   method <- match.arg(method)
   check_bool(strict_within_window, "strict_within_window")
+  check_bool(closed_last, "closed_last")
   check_reserved_window_name(windows)
   check_window_bounds(windows)
   if (identical(method, "trip_start")) {
@@ -691,7 +754,8 @@ rt2s_obs_headways <- function(
       windows = windows,
       quantiles = quantiles,
       max_headway_secs = max_headway_secs,
-      strict_within_window = strict_within_window
+      strict_within_window = strict_within_window,
+      closed_last = closed_last
     ))
   }
   headways_by_passage(
@@ -701,7 +765,8 @@ rt2s_obs_headways <- function(
     quantiles = quantiles,
     min_revisit_gap_s = min_revisit_gap_s,
     max_headway_secs = max_headway_secs,
-    strict_within_window = strict_within_window
+    strict_within_window = strict_within_window,
+    closed_last = closed_last
   )
 }
 
@@ -712,7 +777,8 @@ headways_by_trip_start <- function(
   windows = NULL,
   quantiles = c(median = 0.5, p95 = 0.95),
   max_headway_secs = 3L * 3600L,
-  strict_within_window = FALSE
+  strict_within_window = FALSE,
+  closed_last = FALSE
 ) {
   dt <- rt2s_events_validate(events)
   check_quantiles(quantiles)
@@ -721,6 +787,7 @@ headways_by_trip_start <- function(
     "max_headway_secs"
   )
   check_bool(strict_within_window, "strict_within_window")
+  check_bool(closed_last, "closed_last")
   if (strict_within_window) {
     check_strict_windows(windows)
   }
@@ -749,11 +816,23 @@ headways_by_trip_start <- function(
       headway_secs := NA_real_
     ]
     trips[,
-      window := rt2s_time_window(trip_start, windows, service_date = service_date, tz = tz)
+      window := rt2s_time_window(
+        trip_start,
+        windows,
+        service_date = service_date,
+        tz = tz,
+        closed_last = closed_last
+      )
     ]
   } else {
     trips[,
-      window := rt2s_time_window(trip_start, windows, service_date = service_date, tz = tz)
+      window := rt2s_time_window(
+        trip_start,
+        windows,
+        service_date = service_date,
+        tz = tz,
+        closed_last = closed_last
+      )
     ]
     assigned_strict_groups <- unique(trips[!is.na(window) & window != "other", list(route_ref, direction_id, window)])
     trips <- trips[!is.na(window) & window != "other"]
@@ -814,7 +893,8 @@ headways_by_passage <- function(
   quantiles = c(median = 0.5, p95 = 0.95),
   min_revisit_gap_s = 600L,
   max_headway_secs = 3L * 3600L,
-  strict_within_window = FALSE
+  strict_within_window = FALSE,
+  closed_last = FALSE
 ) {
   dt <- rt2s_events_validate(events)
   check_quantiles(quantiles)
@@ -827,6 +907,7 @@ headways_by_passage <- function(
     "max_headway_secs"
   )
   check_bool(strict_within_window, "strict_within_window")
+  check_bool(closed_last, "closed_last")
   if (strict_within_window) {
     check_strict_windows(windows)
   }
@@ -934,7 +1015,8 @@ headways_by_passage <- function(
         passage_time,
         windows,
         service_date = service_date,
-        tz = tz
+        tz = tz,
+        closed_last = closed_last
       )
     ]
   } else {
@@ -943,7 +1025,8 @@ headways_by_passage <- function(
         passage_time,
         windows,
         service_date = service_date,
-        tz = tz
+        tz = tz,
+        closed_last = closed_last
       )
     ]
     assigned_passage_groups <- unique(passages[!is.na(window) & window != "other", list(route_ref, direction_id, window, reference_stop_ref)])

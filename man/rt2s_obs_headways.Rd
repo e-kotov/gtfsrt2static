@@ -12,7 +12,8 @@ rt2s_obs_headways(
   method = c("trip_start", "passage"),
   reference_stops = NULL,
   min_revisit_gap_s = 600L,
-  strict_within_window = FALSE
+  strict_within_window = FALSE,
+  closed_last = FALSE
 )
 }
 \arguments{
@@ -62,6 +63,10 @@ When \code{TRUE}, events are assigned to windows before calculating intervals,
 intervals crossing a window boundary are discarded, and events in unassigned
 times are ignored. Configured windows must be pairwise non-overlapping under
 \code{strict_within_window = TRUE}.}
+
+\item{closed_last}{Logical; when \code{TRUE} the last window in list order is
+closed on its end, so an event exactly on it is inside that window rather
+than unassigned. See \code{\link{rt2s_time_window}}.}
 }
 \value{
 A data.table with columns \code{route_ref}, \code{direction_id},

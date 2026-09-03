@@ -9,7 +9,8 @@ rt2s_baseline_headways(
   windows,
   route_key = c("route_id", "route_short_name"),
   statistic = c("median", "mean"),
-  max_headway_secs = 3L * 3600L
+  max_headway_secs = 3L * 3600L,
+  closed_last = FALSE
 )
 }
 \arguments{
@@ -30,6 +31,10 @@ first departure falls in no window are excluded.}
 
 \item{max_headway_secs}{Gaps above this are treated as between-service breaks
 and excluded. Default 10800 (3 h).}
+
+\item{closed_last}{Logical; when \code{TRUE} the last window in list order is
+closed on its end, so a trip departing exactly on it is inside that window
+rather than excluded. See \code{\link{rt2s_time_window}}.}
 }
 \value{
 A data.table with columns \code{route_ref}, \code{direction_id},

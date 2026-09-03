@@ -4,7 +4,14 @@
 \alias{rt2s_time_window}
 \title{Classify Times of Day into Named Service Windows}
 \usage{
-rt2s_time_window(x, windows = NULL, service_date = NULL, tz = NULL)
+rt2s_time_window(
+  x,
+  windows = NULL,
+  service_date = NULL,
+  tz = NULL,
+  closed_last = FALSE,
+  na_label = NA_character_
+)
 }
 \arguments{
 \item{x}{A \code{POSIXct} vector (its own timezone is respected) or integer
@@ -16,7 +23,8 @@ in "HH:MM" or "HH:MM:SS", e.g.
 The window name \code{"other"} is reserved for unassigned service times.
 End values may exceed 24:00 for overnight windows, e.g.
 \code{c("22:00", "26:00")} (requires \code{service_date}). Intervals are
-half-open \code{[start, end)} and the first matching window in list order
+half-open \code{[start, end)} - unless \code{closed_last = TRUE}, which
+closes the last window only - and the first matching window in list order
 wins, so overlaps resolve deterministically. \code{NULL} (default) places
 every non-missing time in a single \code{"all"} window.}
 
@@ -28,11 +36,29 @@ GTFS >24:00:00 convention. Without it, POSIXct uses wall-clock time-of-day.}
 
 \item{tz}{Timezone of the service day (defaults to \code{x}'s own timezone,
 else "UTC"). Only used when \code{service_date} is supplied.}
+
+\item{closed_last}{Logical. When \code{FALSE} (default), every window is
+half-open \code{[start, end)}, so a time on the last window's end matches
+no window and becomes \code{"other"}. When \code{TRUE}, the \emph{last
+window in list order} - and only that one - becomes closed,
+\code{[start, end]}; every earlier window stays half-open, so a time on an
+earlier window's end still belongs to whichever later window starts there.
+First match in list order still wins. Has no effect when \code{windows} is
+\code{NULL}. Use it when the configured windows are meant to cover a
+service span inclusive of its closing second.}
+
+\item{na_label}{Length-1 character (\code{NA_character_} by default) used as
+the label wherever \code{x} is \code{NA}. The default reproduces the
+\code{NA} in / \code{NA} out behaviour. \code{"other"} is allowed - it is
+the unassigned label, not a window name - so \code{na_label = "other"}
+folds missing times in with times that match no window. It may not equal
+a window name. Applies in the \code{windows = NULL} branch too.}
 }
 \value{
 Character vector the length of \code{x}: the window name,
-\code{"other"} for a time matching no window (never produced when
-\code{windows} is \code{NULL}), and \code{NA} where \code{x} is \code{NA}.
+\code{"other"} for a non-missing time matching no window (never produced
+when \code{windows} is \code{NULL}), and \code{na_label} - by default
+\code{NA} - where \code{x} is \code{NA}.
 }
 \description{
 Assigns each time to a named window (e.g. "am_peak"), returning one window
@@ -52,5 +78,11 @@ rt2s_time_window(
   as.POSIXct("2026-07-15 00:30:00", tz = "UTC"),
   list(overnight = c("22:00", "26:00")),
   service_date = as.Date("2026-07-14")
+)
+# A departure on the last window's closing second, kept by closed_last:
+rt2s_time_window(
+  as.POSIXct("2026-07-14 23:00:00", tz = "UTC"),
+  list(am_peak = c("06:00", "09:00"), pm_peak = c("16:00", "23:00")),
+  closed_last = TRUE
 )
 }

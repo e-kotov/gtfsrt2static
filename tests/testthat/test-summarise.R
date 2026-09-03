@@ -37,6 +37,151 @@ test_that("rt2s_time_window uses service-day seconds for post-midnight service",
   expect_identical(time_of_day_secs(x, service_date = sd), 88200)
 })
 
+test_that("rt2s_time_window closes only the last window under closed_last", {
+  w <- list(am = c("06:00", "09:00"), pm = c("16:00", "23:00"))
+  x <- as.POSIXct(
+    c(
+      "2026-07-14 09:00:00", # end of the FIRST window
+      "2026-07-14 23:00:00" # end of the LAST window
+    ),
+    tz = "UTC"
+  )
+  # default: every window stays half-open, so both ends fall outside
+  expect_identical(rt2s_time_window(x, w), c("other", "other"))
+  # closed_last closes ONLY the last window: 09:00 is still not "am"
+  expect_identical(rt2s_time_window(x, w, closed_last = TRUE), c("other", "pm"))
+  # a lone window is itself the last window
+  one <- list(am = c("06:00", "09:00"))
+  expect_identical(rt2s_time_window(x[1], one), "other")
+  expect_identical(rt2s_time_window(x[1], one, closed_last = TRUE), "am")
+  # the integer seconds-of-day input path honours it too
+  secs <- c(9L * 3600L, 23L * 3600L)
+  expect_identical(rt2s_time_window(secs, w), c("other", "other"))
+  expect_identical(rt2s_time_window(secs, w, closed_last = TRUE), c("other", "pm"))
+  # no effect at all when windows is NULL
+  expect_identical(rt2s_time_window(x, NULL, closed_last = TRUE), c("all", "all"))
+})
+
+test_that("closed_last closes an overnight last window on its service-day end", {
+  w <- list(am = c("06:00", "09:00"), overnight = c("22:00", "26:00"))
+  sd <- as.Date("2026-07-14")
+  x <- as.POSIXct("2026-07-15 02:00:00", tz = "UTC") # 26:00 of the service day
+  expect_identical(time_of_day_secs(x, service_date = sd), 93600)
+  expect_identical(rt2s_time_window(x, w, service_date = sd), "other")
+  expect_identical(
+    rt2s_time_window(x, w, service_date = sd, closed_last = TRUE),
+    "overnight"
+  )
+  # same instant handed in as raw service-day seconds
+  expect_identical(rt2s_time_window(93600L, w), "other")
+  expect_identical(rt2s_time_window(93600L, w, closed_last = TRUE), "overnight")
+})
+
+test_that("rt2s_time_window labels missing times with na_label", {
+  w <- list(am = c("06:00", "09:00"), pm = c("16:00", "23:00"))
+  x <- as.POSIXct(c("2026-07-14 07:00:00", NA), tz = "UTC")
+  # default keeps NA in -> NA out
+  expect_identical(rt2s_time_window(x, w), c("am", NA_character_))
+  expect_identical(rt2s_time_window(x, w, na_label = "other"), c("am", "other"))
+  expect_identical(rt2s_time_window(x, w, na_label = "missing"), c("am", "missing"))
+  # the windows = NULL branch takes the same label
+  expect_identical(rt2s_time_window(x, NULL), c("all", NA_character_))
+  expect_identical(rt2s_time_window(x, NULL, na_label = "other"), c("all", "other"))
+  # validation: length-1 character (NA allowed), nothing else
+  expect_error(rt2s_time_window(x, w, na_label = 1), "'na_label'")
+  expect_error(rt2s_time_window(x, w, na_label = c("a", "b")), "'na_label'")
+  # a label that is also a window name would hide missing times inside it
+  expect_error(rt2s_time_window(x, w, na_label = "pm"), "also a window name")
+})
+
+test_that("rt2s_time_window reproduces the downstream assign_time_window rule", {
+  # Local copy of the netmob26 workflow's assign_time_window(), reshaped to take
+  # a named list of c(start, end): last window closed, first match wins, and a
+  # missing time falls through to the unassigned label.
+  assign_time_window <- function(secs, windows) {
+    out <- rep("other", length(secs))
+    for (i in seq_along(windows)) {
+      s <- hms_to_secs(windows[[i]][1])
+      e <- hms_to_secs(windows[[i]][2])
+      final_window <- i == length(windows)
+      hit <- !is.na(secs) &
+        secs >= s &
+        (secs < e | (final_window & secs <= e)) &
+        out == "other"
+      out[hit] <- names(windows)[i]
+    }
+    out
+  }
+  w <- list(
+    am = c("06:00", "09:00"),
+    midday = c("09:00", "16:00"),
+    pm = c("16:00", "23:00")
+  )
+  secs <- c(
+    hms_to_secs("06:00"), hms_to_secs("09:00"), hms_to_secs("16:00"), # starts
+    hms_to_secs("09:00"), hms_to_secs("16:00"), hms_to_secs("23:00"), # ends
+    hms_to_secs("23:00"), # the last window's end again
+    NA_real_, # missing
+    hms_to_secs("03:00") # outside every window
+  )
+  expected <- c("am", "midday", "pm", "midday", "pm", "pm", "pm", "other", "other")
+  expect_identical(assign_time_window(secs, w), expected)
+  expect_identical(
+    rt2s_time_window(secs, w, closed_last = TRUE, na_label = "other"),
+    expected
+  )
+})
+
+test_that("rt2s_obs_headways forwards closed_last to the window assignment", {
+  mk <- function(tr, start_ct) {
+    arr <- start_ct + c(0, 120)
+    data.frame(
+      trip_ref = tr, route_ref = "R7", shape_ref = NA_character_,
+      direction_id = 0L, service_date = as.Date("2026-07-14"),
+      stop_ref = c("S1", "S2"), stop_sequence = NA_integer_,
+      arrival_time = arr, departure_time = arr + 15L,
+      provenance = "observed", vehicle_ref = "v", source = "positions",
+      stringsAsFactors = FALSE
+    )
+  }
+  ev <- rbind(
+    mk("A", as.POSIXct("2026-07-14 06:00:00", tz = "UTC")),
+    mk("B", as.POSIXct("2026-07-14 07:00:00", tz = "UTC"))
+  )
+  w <- list(am = c("06:00", "07:00"))
+  # B starts on the window's closing second; the headway attaches to B
+  h <- rt2s_obs_headways(ev, windows = w)
+  expect_identical(h$window, "other")
+  expect_identical(h$n_headways, 1L)
+  hc <- rt2s_obs_headways(ev, windows = w, closed_last = TRUE)
+  expect_identical(hc$window, "am")
+  expect_identical(hc$n_headways, 1L)
+  expect_identical(hc$headway_median, 3600L)
+  # strict mode: B is inside the window, so an interval exists, only when closed
+  expect_identical(
+    nrow(rt2s_obs_headways(ev, windows = w, strict_within_window = TRUE)),
+    0L
+  )
+  hs <- rt2s_obs_headways(
+    ev, windows = w, strict_within_window = TRUE, closed_last = TRUE
+  )
+  expect_identical(hs$window, "am")
+  expect_identical(hs$n_headways, 1L)
+  expect_identical(hs$headway_median, 3600L)
+})
+
+test_that("closed_last must be TRUE or FALSE", {
+  w <- list(am = c("06:00", "09:00"))
+  expect_error(
+    rt2s_time_window(6L * 3600L, w, closed_last = "yes"),
+    "'closed_last' must be TRUE or FALSE"
+  )
+  expect_error(
+    rt2s_obs_headways(make_events_clean(), windows = w, closed_last = "yes"),
+    "'closed_last' must be TRUE or FALSE"
+  )
+})
+
 test_that("rt2s_obs_headways windows post-midnight service by service day", {
   # two runs of one trip pattern, both departing after midnight but attributed
   # to service_date 2026-07-14; 30-min headway within the overnight window.

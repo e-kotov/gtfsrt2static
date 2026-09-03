@@ -256,6 +256,9 @@ rt2s_baseline_patterns <- function(
 #'   \code{"mean"}. Both are rounded to whole seconds.
 #' @param max_headway_secs Gaps above this are treated as between-service breaks
 #'   and excluded. Default 10800 (3 h).
+#' @param closed_last Logical; when \code{TRUE} the last window in list order is
+#'   closed on its end, so a trip departing exactly on it is inside that window
+#'   rather than excluded. See \code{\link{rt2s_time_window}}.
 #' @return A data.table with columns \code{route_ref}, \code{direction_id},
 #'   \code{window}, \code{headway_secs} (integer) and \code{n_sched_trips} (the
 #'   gaps summarised). Groups with fewer than two departures in a window yield no
@@ -293,10 +296,12 @@ rt2s_baseline_headways <- function(
   windows,
   route_key = c("route_id", "route_short_name"),
   statistic = c("median", "mean"),
-  max_headway_secs = 3L * 3600L
+  max_headway_secs = 3L * 3600L,
+  closed_last = FALSE
 ) {
   route_key <- match.arg(route_key)
   statistic <- match.arg(statistic)
+  check_bool(closed_last, "closed_last")
   max_headway_secs <- check_positive_seconds(
     max_headway_secs,
     "max_headway_secs"
@@ -344,7 +349,11 @@ rt2s_baseline_headways <- function(
   }
   # Numeric seconds go through rt2s_time_window()'s pass-through branch, so a
   # planned departure at "25:10:00" lands in an overnight window correctly.
-  starts[, window := rt2s_time_window(start_s, windows = windows)]
+  starts[, window := rt2s_time_window(
+    start_s,
+    windows = windows,
+    closed_last = closed_last
+  )]
   starts <- starts[window != "other"]
   if (nrow(starts) == 0L) {
     stop(

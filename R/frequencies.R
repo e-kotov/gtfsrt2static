@@ -306,6 +306,10 @@ rt2s_monotone_offsets <- function(travel, dwell) {
 #'   means
 #'   \code{c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)}; the caller
 #'   supplies the extra trips, so it already owns those ids.
+#' @param closed_last Logical; when \code{TRUE} the last window in list order is
+#'   closed on its end, so an event exactly on it is inside that window rather
+#'   than unassigned. Passed to \code{\link{rt2s_obs_headways}}. See
+#'   \code{\link{rt2s_time_window}}.
 #' @param strict_within_window Passed to \code{\link{rt2s_obs_headways}} when
 #'   estimating headways from events. Logical; default \code{FALSE}. When \code{TRUE},
 #'   configured windows must be pairwise non-overlapping.
@@ -358,7 +362,8 @@ rt2s_frequencies <- function(
   headway_groups = NULL,
   route_key = c("route_id", "route_short_name"),
   extra_trips = NULL,
-  strict_within_window = FALSE
+  strict_within_window = FALSE,
+  closed_last = FALSE
 ) {
   if (
     missing(windows) ||
@@ -385,6 +390,7 @@ rt2s_frequencies <- function(
     }
   }
   check_bool(strict_within_window, "strict_within_window")
+  check_bool(closed_last, "closed_last")
   if (strict_within_window) {
     check_strict_windows(windows)
   }
@@ -491,7 +497,8 @@ rt2s_frequencies <- function(
       windows = windows,
       quantiles = q$headway,
       max_headway_secs = max_headway_secs,
-      strict_within_window = strict_within_window
+      strict_within_window = strict_within_window,
+      closed_last = closed_last
     )
   } else {
     headways_by_passage(
@@ -501,7 +508,8 @@ rt2s_frequencies <- function(
       quantiles = q$headway,
       min_revisit_gap_s = min_revisit_gap_s,
       max_headway_secs = max_headway_secs,
-      strict_within_window = strict_within_window
+      strict_within_window = strict_within_window,
+      closed_last = closed_last
     )
   }
   hw <- hw[window != "other"]

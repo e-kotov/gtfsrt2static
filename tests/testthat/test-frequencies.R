@@ -1979,3 +1979,38 @@ test_that("route_key = \"route_id\" still inherits routes.txt by route_id", {
   expect_identical(routes$route_short_name, c("1", "2"))
   expect_identical(routes$route_long_name, c("Baseline Tram", "Baseline Bus"))
 })
+
+test_that("rt2s_frequencies forwards closed_last to the headway windows", {
+  # make_events_clean() runs start 06:00 / 06:10 / 06:22 / 06:40.
+  # windows: early ["06:00", "06:22"), later ["06:22", "06:40").
+  # Non-strict headways attach to the later event: 600 -> B (early),
+  # 720 -> C (later), 1080 -> D, whose 06:40:00 start is the last window's
+  # closing second, so D is "other" (dropped) by default and "later" when closed.
+  #   closed_last = FALSE -> later carries one headway,       median 720
+  #   closed_last = TRUE  -> later carries 720 and 1080,      median 900
+  w <- list(early = c("06:00", "06:22"), later = c("06:22", "06:40"))
+  ag <- list(name = "T", url = "https://t.org", timezone = "UTC")
+
+  open <- rt2s_frequencies(
+    make_events_clean(), windows = w, agency = ag, stops = freq_stops()
+  )
+  of <- open$median$frequencies
+  expect_identical(of$headway_secs[of$start_time == "06:22:00"], 720L)
+
+  closed <- rt2s_frequencies(
+    make_events_clean(), windows = w, agency = ag, stops = freq_stops(),
+    closed_last = TRUE
+  )
+  cf <- closed$median$frequencies
+  expect_identical(cf$headway_secs[cf$start_time == "06:22:00"], 900L)
+  # the advertised window bounds are the configured ones, closed or not
+  expect_identical(cf$end_time[cf$start_time == "06:22:00"], "06:40:00")
+
+  expect_error(
+    rt2s_frequencies(
+      make_events_clean(), windows = w, agency = ag, stops = freq_stops(),
+      closed_last = "yes"
+    ),
+    "'closed_last' must be TRUE or FALSE"
+  )
+})
