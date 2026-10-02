@@ -14,7 +14,9 @@ gtfs_day_origin <- function(service_date, tz) {
     # paste(character(0), "12:00:00") would recycle to " 12:00:00"
     return(as.POSIXct(numeric(0), tz = tz))
   }
-  as.POSIXct(paste(as.character(service_date), "12:00:00"), tz = tz) - 43200
+  days <- unique(service_date)
+  origin <- as.POSIXct(paste(as.character(days), "12:00:00"), tz = tz) - 43200
+  origin[match(service_date, days)]
 }
 
 #' GTFS Service Date of an Absolute Time

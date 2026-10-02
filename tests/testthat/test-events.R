@@ -385,3 +385,21 @@ test_that("a poll in the first hour of a fall-back day belongs to the day before
   events <- rt2s_events_from_trip_updates(u, tz = "Europe/Berlin")
   expect_identical(events$service_date, as.Date("2026-10-24"))
 })
+
+test_that("delay-only updates at stops with blank scheduled times warn, not fail", {
+  u <- data.frame(
+    trip_id = "T1", start_date = "20260722", stop_id = "B", stop_sequence = 2L,
+    arrival_delay = 60, departure_delay = 60,
+    file_timestamp = as.POSIXct("2026-07-22 05:00:00", tz = "UTC")
+  )
+  b <- list(stop_times = data.frame(
+    trip_id = "T1", stop_id = c("A", "B", "C"), stop_sequence = 1:3,
+    arrival_time = c("06:00:00", "", "08:00:00"),
+    departure_time = c("06:00:00", "", "08:00:00")
+  ))
+  expect_warning(
+    events <- rt2s_events_from_trip_updates(u, baseline = b),
+    "no scheduled time at the stop"
+  )
+  expect_true(is.na(events$arrival_time))
+})

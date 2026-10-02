@@ -558,16 +558,22 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     once <- which(!(duplicated(stop_key_s) | duplicated(stop_key_s, fromLast = TRUE)))
     by_stop <- once[match(paste(dt$trip_id, dt$stop_id, sep = "\r"), stop_key_s[once])]
     row[is.na(row)] <- by_stop[is.na(row)]
+    # A blank scheduled time (a non-timepoint) cannot anchor a delay.
     sched_arr <- as.character(sched$arrival_time)[row]
     sched_dep <- as.character(sched$departure_time)[row]
+    sched_arr[!nzchar(trimws(sched_arr))] <- NA_character_
+    sched_dep[!nzchar(trimws(sched_dep))] <- NA_character_
     clock_to_posix <- function(clock, service_date) {
       if (length(clock) == 0L) {
         return(as.POSIXct(numeric(0), tz = tz))
       }
-      parts <- data.table::tstrsplit(clock, ":", fixed = TRUE)
-      secs <- as.numeric(parts[[1]]) * 3600 +
-        as.numeric(parts[[2]]) * 60 +
-        as.numeric(parts[[3]])
+      # Vectorised "H:MM:SS" parse; anything else (a blank) becomes NA.
+      pattern <- "^\\s*(\\d+):(\\d{2}):(\\d{2})\\s*$"
+      ok <- grepl(pattern, clock)
+      secs <- rep(NA_real_, length(clock))
+      secs[ok] <- as.numeric(sub(pattern, "\\1", clock[ok])) * 3600 +
+        as.numeric(sub(pattern, "\\2", clock[ok])) * 60 +
+        as.numeric(sub(pattern, "\\3", clock[ok]))
       gtfs_day_origin(service_date, tz) + secs
     }
     i_arr <- which(dt$delay_only_arr & !is.na(sched_arr))
@@ -593,9 +599,10 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     if (nrow(unresolved) > 0L) {
       warning(
         nrow(unresolved),
-        " delay-only update(s) could not be matched to one baseline row (trip ",
-        "or stop absent, or a stop the trip serves more than once reported ",
-        "without a usable stop_sequence) and were left without times.",
+        " delay-only update(s) could not be resolved against the baseline ",
+        "(trip or stop absent, a stop the trip serves more than once reported ",
+        "without a usable stop_sequence, or no scheduled time at the stop) ",
+        "and were left without times.",
         call. = FALSE
       )
     }

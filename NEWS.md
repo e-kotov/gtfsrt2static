@@ -11,7 +11,9 @@
   serves a stop more than once; visits are kept apart by `stop_sequence`.
 * `rt2s_events_from_trip_updates()` resolves a delay-only update by its
   `stop_sequence` only when the baseline row at that sequence is the same
-  stop; otherwise it falls back to the stop and warns.
+  stop; otherwise it falls back to the stop and warns. A delay-only update at
+  a stop whose scheduled time is blank no longer fails; it is left without a
+  time with a warning.
 * GTFS clock times are counted from noon minus 12h, as GTFS specifies, so
   daylight-saving change days no longer shift times by an hour. Events in
   the first hour of a fall-back day are attributed to the previous service
