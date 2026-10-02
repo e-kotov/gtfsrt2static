@@ -23,7 +23,10 @@ object or a path to a GTFS zip.}
 
 \item{service_date}{The service day the snapshot describes (one realized
 feed per service day in baseline mode). Defaults to the single date in
-\code{events}; must be given when events span several dates.}
+\code{events}; must be given when events span several dates. In both
+modes only events whose \code{service_date} equals this day are kept and
+their clock strings are rendered relative to its midnight; it is an error
+when no event falls on it.}
 
 \item{tz}{Timezone for GTFS clock strings. Defaults to the baseline's
 \code{agency_timezone} (baseline mode) or "UTC".}
@@ -52,6 +55,13 @@ planned-vs-realized joins are direct. Without a baseline, a compliant feed is
 scaffolded from scratch via \code{\link{rt2s_scaffold}}.
 }
 \details{
+In baseline mode each observed event is paired with one planned
+\code{stop_times} row. A trip that visits the same stop more than once is
+paired visit by visit: the k-th observed visit at a stop (by arrival time)
+takes the k-th planned \code{stop_sequence} at that stop, and an observed
+visit beyond the planned count is numbered chronologically after the planned
+ones. The output therefore has exactly one row per observed event.
+
 This is the entry point to use when each observed run should stay its own
 trip. To collapse many runs into one representative trip per time window with
 a \code{frequencies.txt} headway instead, use

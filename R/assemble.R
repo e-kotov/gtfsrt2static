@@ -376,6 +376,13 @@ rt2s_publishable <- function(feed) {
 #' planned-vs-realized joins are direct. Without a baseline, a compliant feed is
 #' scaffolded from scratch via \code{\link{rt2s_scaffold}}.
 #'
+#' In baseline mode each observed event is paired with one planned
+#' \code{stop_times} row. A trip that visits the same stop more than once is
+#' paired visit by visit: the k-th observed visit at a stop (by arrival time)
+#' takes the k-th planned \code{stop_sequence} at that stop, and an observed
+#' visit beyond the planned count is numbered chronologically after the planned
+#' ones. The output therefore has exactly one row per observed event.
+#'
 #' This is the entry point to use when each observed run should stay its own
 #' trip. To collapse many runs into one representative trip per time window with
 #' a \code{frequencies.txt} headway instead, use
@@ -386,7 +393,10 @@ rt2s_publishable <- function(feed) {
 #'   object or a path to a GTFS zip.
 #' @param service_date The service day the snapshot describes (one realized
 #'   feed per service day in baseline mode). Defaults to the single date in
-#'   \code{events}; must be given when events span several dates.
+#'   \code{events}; must be given when events span several dates. In both
+#'   modes only events whose \code{service_date} equals this day are kept and
+#'   their clock strings are rendered relative to its midnight; it is an error
+#'   when no event falls on it.
 #' @param tz Timezone for GTFS clock strings. Defaults to the baseline's
 #'   \code{agency_timezone} (baseline mode) or "UTC".
 #' @param feed_lang Primary feed language written to
@@ -411,9 +421,18 @@ rt2s_assemble <- function(
 ) {
   events <- rt2s_events_validate(events)
 
+  # `service_date` is both the argument and an events column. Inside a
+  # data.table bracket the bare symbol resolves to the column, so every day
+  # filter and clock origin below is computed from a local that no column can
+  # mask (`svc_date`, `keep_day`), never from `service_date` within `[`.
   if (is.null(baseline)) {
     if (!is.null(service_date)) {
-      events <- events[events$service_date == as.Date(service_date)]
+      svc_date <- as.Date(service_date)
+      keep_day <- events$service_date == svc_date
+      events <- events[keep_day]
+      if (nrow(events) == 0L) {
+        stop("No events on service date ", svc_date, ".", call. = FALSE)
+      }
     }
     return(rt2s_scaffold(
       events,
@@ -450,10 +469,11 @@ rt2s_assemble <- function(
     }
     service_date <- dates
   }
-  service_date <- as.Date(service_date)
-  day_events <- events[events$service_date == service_date]
+  svc_date <- as.Date(service_date)
+  keep_day <- events$service_date == svc_date
+  day_events <- events[keep_day]
   if (nrow(day_events) == 0L) {
-    stop("No events on service date ", service_date, ".", call. = FALSE)
+    stop("No events on service date ", svc_date, ".", call. = FALSE)
   }
 
   if (is.null(tz)) {
@@ -489,19 +509,42 @@ rt2s_assemble <- function(
     )
   }
 
-  # stop_sequence precedence: event value > baseline numbering > chronology
+  # stop_sequence precedence: event value > baseline numbering > chronology.
+  # A trip may visit the same stop more than once (a loop), so (trip, stop)
+  # does not identify a planned row. Pair visits by rank instead: the k-th
+  # observed visit at a stop (by arrival_time) takes the k-th planned row at
+  # that stop (by stop_sequence). An observed visit beyond the planned count
+  # finds no partner and falls through to the chronology fallback below. The
+  # join is therefore one-to-one and can never multiply rows.
   base_seq <- baseline_st[, .(
     trip_ref = as.character(trip_id),
     stop_ref = as.character(stop_id),
     base_sequence = as.integer(stop_sequence)
   )]
+  base_seq[,
+    visit_rank := data.table::frank(base_sequence, ties.method = "first"),
+    by = .(trip_ref, stop_ref)
+  ]
+  matched[,
+    visit_rank := data.table::frank(arrival_time, ties.method = "first"),
+    by = .(trip_ref, stop_ref)
+  ]
   st <- merge(
     matched,
     base_seq,
-    by = c("trip_ref", "stop_ref"),
+    by = c("trip_ref", "stop_ref", "visit_rank"),
     all.x = TRUE,
     sort = FALSE
   )
+  if (nrow(st) != nrow(matched)) {
+    stop(
+      "Internal error: pairing ", nrow(matched), " observed stop events with ",
+      "the baseline stop_times produced ", nrow(st), " rows; the join must ",
+      "be one-to-one.",
+      call. = FALSE
+    )
+  }
+  st[, visit_rank := NULL]
   st[, seq_final := stop_sequence]
   st[is.na(seq_final), seq_final := base_sequence]
   data.table::setorderv(st, c("trip_ref", "arrival_time"))
@@ -509,15 +552,15 @@ rt2s_assemble <- function(
 
   stop_times <- st[, .(
     trip_id = trip_ref,
-    arrival_time = gtfs_clock(arrival_time, service_date, tz),
-    departure_time = gtfs_clock(departure_time, service_date, tz),
+    arrival_time = gtfs_clock(arrival_time, svc_date, tz),
+    departure_time = gtfs_clock(departure_time, svc_date, tz),
     stop_id = stop_ref,
     stop_sequence = as.integer(seq_final)
   )]
   data.table::setorderv(stop_times, c("trip_id", "stop_sequence"))
 
   # Realized service: exactly the trips that ran, on one service id
-  service_id <- paste0("SVC_", yyyymmdd(service_date))
+  service_id <- paste0("SVC_", yyyymmdd(svc_date))
   realized_trips <- baseline_trips[
     as.character(baseline_trips$trip_id) %in% unique(matched$trip_ref)
   ]
@@ -531,7 +574,7 @@ rt2s_assemble <- function(
   feed$calendar <- NULL
   feed$calendar_dates <- data.table::data.table(
     service_id = service_id,
-    date = yyyymmdd(service_date),
+    date = yyyymmdd(svc_date),
     exception_type = 1L
   )
   feed$feed_info <- data.table::data.table(
@@ -548,8 +591,8 @@ rt2s_assemble <- function(
       "https://example.org"
     },
     feed_lang = feed_lang,
-    feed_start_date = yyyymmdd(service_date),
-    feed_end_date = yyyymmdd(service_date)
+    feed_start_date = yyyymmdd(svc_date),
+    feed_end_date = yyyymmdd(svc_date)
   )
   if (!is.null(feed_contact_email)) {
     feed$feed_info[, feed_contact_email := as.character(feed_contact_email)]

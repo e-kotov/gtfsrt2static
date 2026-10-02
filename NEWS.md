@@ -1,3 +1,33 @@
+# gtfsrt2static (development version)
+
+## Bug fixes
+
+* `rt2s_assemble()` in baseline mode multiplied `stop_times` rows when a trip
+  visited the same stop more than once: observed events were joined to the
+  planned `stop_times` on (trip, stop) alone, so an event at a stop the trip
+  visits *k* times came out *k* times, and the resulting feed failed GTFS
+  validation with duplicate `(trip_id, stop_sequence)` keys. Observed and
+  planned visits are now paired visit by visit - the *k*-th observed visit at a
+  stop (by arrival time) takes the *k*-th planned `stop_sequence` at that stop,
+  and an observed visit beyond the planned count falls through to the existing
+  chronological fallback - so the output has exactly one row per observed
+  event. An internal guard errors if the pairing ever changes the row count.
+  Output for trips that do not repeat a stop is unchanged.
+
+* The `service_date` argument of `rt2s_assemble()` was ignored. Inside the
+  data.table expressions the bare name resolved to the events column of the
+  same name, so the day filter compared the column with itself and never
+  dropped anything (both modes), and in baseline mode each event's clock
+  strings were rendered from its own day's midnight rather than the requested
+  day's. The argument is now honoured as documented in both modes: only events
+  on `service_date` are kept, clock strings and `calendar_dates` refer to that
+  day, and an error (`No events on service date`) is raised when no event falls
+  on it. Two consequences for callers: events spanning several days with an
+  explicit `service_date` now yield a one-day feed instead of all days' trips
+  under one service id; and a trip attributed to the following day (its first
+  observed stop is after midnight) now errors when the previous day's feed is
+  requested, instead of being written with clocks about 24 hours off.
+
 # gtfsrt2static 0.8.0
 
 ## New arguments

@@ -350,3 +350,176 @@ test_that("baseline-mode feeds are publishable when baseline is complete", {
   feed <- suppressWarnings(rt2s_assemble(events, baseline = make_baseline()))
   expect_true(rt2s_publishable(feed)$publishable)
 })
+
+# Small synthetic fixtures for the regression tests below: one route, stops
+# A/B/C, 90 s between stops, 20 s dwell. `pattern` is the ordered stop visit
+# list of a trip (it may repeat a stop, e.g. a loop A, B, A, C).
+synthetic_events <- function(trip_ref, day, pattern, stop_sequence = NA_integer_,
+                             start = "06:00:00") {
+  t0 <- as.POSIXct(paste(day, start), tz = "UTC")
+  offsets <- 90 * (seq_along(pattern) - 1L)
+  data.table::data.table(
+    trip_ref = trip_ref,
+    route_ref = "R1",
+    shape_ref = NA_character_,
+    direction_id = 0L,
+    service_date = as.Date(day),
+    stop_ref = pattern,
+    stop_sequence = stop_sequence,
+    arrival_time = t0 + offsets,
+    departure_time = t0 + offsets + 20,
+    provenance = "observed",
+    vehicle_ref = "V1",
+    source = "positions"
+  )
+}
+
+synthetic_baseline <- function(trip_ids, pattern) {
+  n <- length(pattern)
+  planned <- as.POSIXct("2026-01-01 06:00:00", tz = "UTC") + 90 * (seq_len(n) - 1L)
+  list(
+    agency = data.frame(
+      agency_id = "AG", agency_name = "Synthetic",
+      agency_url = "https://example.org", agency_timezone = "UTC"
+    ),
+    stops = data.frame(
+      stop_id = c("A", "B", "C"), stop_name = c("A", "B", "C"),
+      stop_lat = c(52, 52.004, 52.008), stop_lon = 9
+    ),
+    routes = data.frame(
+      route_id = "R1", agency_id = "AG", route_short_name = "1",
+      route_long_name = "", route_type = 3L
+    ),
+    trips = data.frame(
+      route_id = "R1", service_id = "S", trip_id = trip_ids, direction_id = 0L
+    ),
+    stop_times = data.frame(
+      trip_id = rep(trip_ids, each = n),
+      arrival_time = rep(format(planned, "%H:%M:%S"), length(trip_ids)),
+      departure_time = rep(format(planned + 20, "%H:%M:%S"), length(trip_ids)),
+      stop_id = rep(pattern, length(trip_ids)),
+      stop_sequence = rep(seq_len(n), length(trip_ids))
+    ),
+    calendar = data.frame(
+      service_id = "S", monday = 1L, tuesday = 1L, wednesday = 1L,
+      thursday = 1L, friday = 1L, saturday = 1L, sunday = 1L,
+      start_date = 20260101L, end_date = 20261231L
+    )
+  )
+}
+
+duplicated_keys <- function(stop_times) {
+  stop_times[, .N, by = .(trip_id, stop_sequence)][N > 1L]
+}
+
+test_that("baseline mode pairs repeated stop visits by rank: one row per event", {
+  loop <- c("A", "B", "A", "C")
+  baseline <- synthetic_baseline("T1", loop)
+
+  # Event stop_sequence supplied, and NA (baseline numbering must fill it in).
+  for (supplied in list(1:4, NA_integer_)) {
+    events <- synthetic_events("T1", "2026-07-22", loop, stop_sequence = supplied)
+    feed <- rt2s_assemble(
+      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+    )
+    st <- feed$stop_times
+    expect_identical(nrow(st), nrow(events))
+    expect_identical(nrow(duplicated_keys(st)), 0L)
+    # the k-th observed visit at A takes the k-th planned sequence at A
+    expect_identical(st$stop_sequence, 1:4)
+    expect_identical(st$stop_id, loop)
+    expect_identical(
+      st$arrival_time,
+      c("06:00:00", "06:01:30", "06:03:00", "06:04:30")
+    )
+  }
+
+  # An observed visit beyond the planned count (a third pass at A) is not
+  # multiplied either: it falls through to the chronology fallback.
+  events <- synthetic_events("T1", "2026-07-22", c(loop, "A"))
+  feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  st <- feed$stop_times
+  expect_identical(nrow(st), 5L)
+  expect_identical(nrow(duplicated_keys(st)), 0L)
+  expect_identical(st[stop_sequence > 10000L, stop_id], "A")
+  expect_identical(st[stop_sequence > 10000L, arrival_time], "06:06:00")
+})
+
+test_that("rt2s_assemble keeps only the requested service_date in baseline mode", {
+  events <- rbind(
+    synthetic_events("T1", "2026-07-22", c("A", "B"), stop_sequence = 1:2),
+    synthetic_events("T2", "2026-07-23", c("A", "B"), stop_sequence = 1:2)
+  )
+  baseline <- synthetic_baseline(c("T1", "T2"), c("A", "B"))
+
+  feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  expect_identical(as.character(feed$trips$trip_id), "T1")
+  expect_identical(unique(feed$stop_times$trip_id), "T1")
+  expect_identical(feed$stop_times$arrival_time, c("06:00:00", "06:01:30"))
+  expect_identical(feed$calendar_dates$date, 20260722L)
+
+  feed2 <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-23", tz = "UTC"
+  )
+  expect_identical(as.character(feed2$trips$trip_id), "T2")
+  expect_identical(unique(feed2$stop_times$trip_id), "T2")
+  expect_identical(feed2$calendar_dates$date, 20260723L)
+})
+
+test_that("rt2s_assemble keeps only the requested service_date in scaffold mode", {
+  events <- rbind(
+    synthetic_events("T1", "2026-07-22", c("A", "B"), stop_sequence = 1:2),
+    synthetic_events("T2", "2026-07-23", c("A", "B"), stop_sequence = 1:2)
+  )
+  stops <- synthetic_baseline("T1", c("A", "B"))$stops
+
+  feed <- rt2s_assemble(
+    events,
+    service_date = "2026-07-22",
+    tz = "UTC",
+    agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
+    stops = stops,
+    route_type = 3L
+  )
+  expect_identical(as.character(feed$trips$trip_id), "T1")
+  expect_identical(unique(feed$stop_times$trip_id), "T1")
+  expect_identical(feed$calendar_dates$date, 20260722L)
+  expect_identical(feed$calendar_dates$service_id, "SVC_20260722")
+})
+
+test_that("events on another day are never rendered against the requested service_date", {
+  # A trip whose first observed stop falls just after midnight is attributed
+  # to 2026-07-23. Asking for the 2026-07-22 feed must not silently render
+  # its clocks from 2026-07-22 midnight: nothing falls on that day.
+  events <- synthetic_events("T1", "2026-07-23", c("A", "B"), start = "00:00:00")
+  baseline <- synthetic_baseline("T1", c("A", "B"))
+
+  expect_error(
+    rt2s_assemble(
+      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+    ),
+    "No events on service date"
+  )
+  expect_error(
+    rt2s_assemble(
+      events,
+      service_date = "2026-07-22",
+      tz = "UTC",
+      agency = list(name = "X", url = "https://x.org", timezone = "UTC"),
+      stops = baseline$stops,
+      route_type = 3L
+    ),
+    "No events on service date"
+  )
+
+  # The day the events belong to renders from its own midnight.
+  feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-23", tz = "UTC"
+  )
+  expect_identical(feed$stop_times$arrival_time, c("00:00:00", "00:01:30"))
+  expect_identical(feed$calendar_dates$date, 20260723L)
+})
