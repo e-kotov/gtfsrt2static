@@ -366,6 +366,17 @@ rt2s_publishable <- function(feed) {
   )
 }
 
+# Rank of `x` within each (a, b) group, ties in row order and NA `x` last, as
+# frank(x, ties.method = "first") by group would give. One stable sort of the
+# whole table instead of a frank() call per group, which on a daily feed (one
+# group per trip and stop) dominated the assembly time.
+rank_within <- function(a, b, x) {
+  o <- order(a, b, x, na.last = TRUE, method = "radix")
+  out <- integer(length(x))
+  out[o] <- data.table::rowid(a[o], b[o])
+  out
+}
+
 #' Assemble a Realized GTFS Feed from Observed Stop Events
 #'
 #' Turns observed stop events into one static GTFS feed describing the service
@@ -521,14 +532,8 @@ rt2s_assemble <- function(
     stop_ref = as.character(stop_id),
     base_sequence = as.integer(stop_sequence)
   )]
-  base_seq[,
-    visit_rank := data.table::frank(base_sequence, ties.method = "first"),
-    by = .(trip_ref, stop_ref)
-  ]
-  matched[,
-    visit_rank := data.table::frank(arrival_time, ties.method = "first"),
-    by = .(trip_ref, stop_ref)
-  ]
+  base_seq[, visit_rank := rank_within(trip_ref, stop_ref, base_sequence)]
+  matched[, visit_rank := rank_within(trip_ref, stop_ref, arrival_time)]
   st <- merge(
     matched,
     base_seq,
