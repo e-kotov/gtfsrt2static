@@ -58,21 +58,29 @@ scaffolded from scratch via \code{\link{rt2s_scaffold}}.
 \details{
 In baseline mode each observed event is paired with at most one planned
 \code{stop_times} row. Where the planned trip serves a stop more than once
-(a loop), each observed visit takes the planned visit nearest in planned
-time, with observed and planned visits kept in the same order, so a missed
-first pass does not shift the second pass onto the first one's
-\code{stop_sequence}. A planned row without times (a non-timepoint) is
-placed by linear interpolation over \code{stop_sequence}; only where a trip
-has fewer than two timed rows does the k-th observed visit take the k-th
-planned one. An observed visit that carries the \code{stop_sequence} of one
-of the planned visits takes that visit before the others are paired.
-Observed visits are otherwise ordered by arrival; visits with the same
-arrival are ordered by their own \code{stop_sequence}, then by departure,
-and only then by input row, which warns (duplicated events are the usual
-cause). Output that still repeats a \code{(trip_id, stop_sequence)},
-because the events' own numbers disagree with the baseline's, warns too.
-An observed visit without a planned
-partner is numbered chronologically after the planned ones. The output
+(a loop):
+\itemize{
+\item an observed visit that carries the \code{stop_sequence} of one of
+the planned visits takes that visit;
+\item any other visit may only take a planned visit whose
+\code{stop_sequence} lies between those of the trip's stops observed
+just before and just after it (stops the trip serves once, and visits
+whose own number matches the plan), so it is never placed before a stop
+it was observed after;
+\item within those limits observed and planned visits pair in order, as
+many as possible, each nearest in planned time, so a missed first pass
+does not shift the second pass onto the first one's
+\code{stop_sequence}.
+}
+A planned row without times (a non-timepoint) is placed by linear
+interpolation over \code{stop_sequence}; without planned times the pairs
+follow observation order. Observed visits are ordered by arrival; visits
+with the same arrival are ordered by their own \code{stop_sequence}, then
+by departure, and only then by input row, which warns (duplicated events
+are the usual cause). An observed visit without a planned partner is
+numbered chronologically after the planned ones, which can put it out of
+time order. Output that repeats a \code{(trip_id, stop_sequence)}, or whose
+times go backwards along \code{stop_sequence}, warns with the count. The output
 therefore has exactly one row per observed event.
 
 This is the entry point to use when each observed run should stay its own

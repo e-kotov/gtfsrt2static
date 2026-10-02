@@ -381,35 +381,87 @@ rank_within <- function(a, b, x, ...) {
   out
 }
 
-# Order-preserving pairing of two sorted numeric vectors with length(x) <=
-# length(y): returns, for each x[i], the index of its partner in y, the
-# partners strictly increasing and the summed |x - y| minimal. Dynamic
-# programming over (i, j); the inputs are the visits of one trip at one stop,
-# so they are tiny.
-monotone_match <- function(x, y) {
+# Order-preserving partial pairing of observed visits (times `x`, in
+# observation order) with planned visits (times `y`, in planned order) at one
+# stop of one trip. `allowed[i, j]` says whether visit i may take planned
+# visit j. Returns, for each x[i], the index of its partner in y or NA; the
+# partners strictly increase. The pairing has as many pairs as the allowed
+# cells permit and, among those, the least summed |x - y| (a pair with an
+# unknown time costs 0). Equal choices go to the earlier planned visits and
+# the earlier observed ones. Dynamic programming over (i, j); the inputs are
+# the visits of one trip at one stop, so they are tiny.
+match_visits <- function(x, y, allowed) {
   m <- length(x)
   k <- length(y)
-  cost <- matrix(Inf, m, k)
-  from <- matrix(NA_integer_, m, k)
+  n <- matrix(0L, m + 1L, k + 1L)
+  cost <- matrix(0, m + 1L, k + 1L)
+  same <- function(n1, c1, n2, c2) n1 == n2 && abs(c1 - c2) < 1e-9
+  better <- function(n1, c1, n2, c2) n1 > n2 || (n1 == n2 && c1 < c2 - 1e-9)
+  d <- abs(outer(x, y, "-"))
+  d[is.na(d)] <- 0
   for (i in seq_len(m)) {
-    for (j in i:(k - m + i)) {
-      d <- abs(x[i] - y[j])
-      if (i == 1L) {
-        cost[i, j] <- d
-      } else {
-        prev <- cost[i - 1L, seq_len(j - 1L)]
-        b <- which.min(prev)
-        cost[i, j] <- d + prev[b]
-        from[i, j] <- b
+    for (j in seq_len(k)) {
+      bn <- n[i + 1L, j]
+      bc <- cost[i + 1L, j]
+      if (better(n[i, j + 1L], cost[i, j + 1L], bn, bc)) {
+        bn <- n[i, j + 1L]
+        bc <- cost[i, j + 1L]
       }
+      if (allowed[i, j] && better(n[i, j] + 1L, cost[i, j] + d[i, j], bn, bc)) {
+        bn <- n[i, j] + 1L
+        bc <- cost[i, j] + d[i, j]
+      }
+      n[i + 1L, j + 1L] <- bn
+      cost[i + 1L, j + 1L] <- bc
     }
   }
-  out <- integer(m)
-  out[m] <- which.min(cost[m, ])
-  for (i in rev(seq_len(m - 1L))) {
-    out[i] <- from[i + 1L, out[i + 1L]]
+  out <- rep(NA_integer_, m)
+  i <- m
+  j <- k
+  while (i > 0L && j > 0L) {
+    cn <- n[i + 1L, j + 1L]
+    cc <- cost[i + 1L, j + 1L]
+    if (same(n[i + 1L, j], cost[i + 1L, j], cn, cc)) {
+      j <- j - 1L
+    } else if (same(n[i, j + 1L], cost[i, j + 1L], cn, cc)) {
+      i <- i - 1L
+    } else {
+      out[i] <- j
+      i <- i - 1L
+      j <- j - 1L
+    }
   }
   out
+}
+
+# Bounds on the planned stop_sequence of each observed visit, from the visits
+# of the same trip whose planned stop_sequence is already `known`: a visit
+# observed after one numbered s and before one numbered t lies strictly
+# between s and t. Visits at the same time do not bound each other, and a
+# visit without a time is unbounded.
+sequence_bounds <- function(trip, secs, known) {
+  lo <- rep(-Inf, length(trip))
+  hi <- rep(Inf, length(trip))
+  timed <- which(!is.na(secs))
+  if (length(timed) == 0L) {
+    return(list(lo = lo, hi = hi))
+  }
+  o <- timed[order(trip[timed], secs[timed])]
+  g <- data.table::rleid(trip[o], secs[o])
+  k_max <- known[o]
+  k_max[is.na(k_max)] <- -Inf
+  k_min <- known[o]
+  k_min[is.na(k_min)] <- Inf
+  g_max <- vapply(split(k_max, g), max, numeric(1))
+  g_min <- vapply(split(k_min, g), min, numeric(1))
+  g_trip <- trip[o][!duplicated(g)]
+  before <- function(v) c(-Inf, cummax(v)[-length(v)])
+  after <- function(v) c(rev(cummin(rev(v)))[-1L], Inf)
+  g_lo <- unsplit(lapply(split(g_max, g_trip), before), g_trip)
+  g_hi <- unsplit(lapply(split(g_min, g_trip), after), g_trip)
+  lo[o] <- g_lo[g]
+  hi[o] <- g_hi[g]
+  list(lo = lo, hi = hi)
 }
 
 # Planned seconds after the service-day origin for baseline stop_times rows
@@ -459,20 +511,23 @@ n_tied_neighbours <- function(...) {
 
 # Planned-visit rank paired with each observed event. A stop the planned trip
 # serves once pairs by observation order (the first observed visit takes it,
-# later ones fall through). A stop the trip serves several times pairs each
-# observed visit with the planned visit nearest in planned time, keeping both
-# in order, so an unobserved first visit does not shift the second visit onto
-# the first one's stop_sequence. An event that carries the stop_sequence of
-# one of the planned visits takes that visit first: its output keeps its own
-# number, so pairing it elsewhere would hand that number to an unnumbered
-# event as well. The remaining events pair with the remaining planned visits
-# as above. Without usable times on either side they pair in observation
-# order. Observation order is by `obs_secs`; visits tied on
-# it are ordered by the event's own stop_sequence (`obs_seq`), then by
-# departure (`obs_dep`), and only then by input row, with a warning when a
-# repeated stop has visits tied on all three (duplicated events). Work is
-# linear in the rows: only trips with a repeated stop are timed, and each
-# repeated group is visited once.
+# later ones fall through). At a stop the trip serves several times:
+#  - an event whose own stop_sequence names one of the planned visits takes
+#    that visit (its output keeps its own number, so pairing it elsewhere
+#    would hand that number to an unnumbered event as well);
+#  - every other event may only take a planned visit whose stop_sequence lies
+#    between those of the trip's visits observed just before and just after
+#    it (sequence_bounds(), from events whose number matches the plan and
+#    from first visits to stops served once), so a visit cannot be placed
+#    before a stop it was observed after;
+#  - within those bounds, events and planned visits pair in order, as many as
+#    possible, nearest in planned time (match_visits()). An event left without
+#    a partner falls through to the chronology fallback.
+# Observation order is by `obs_secs`; visits tied on it are ordered by the
+# event's own stop_sequence (`obs_seq`), then by departure (`obs_dep`), and
+# only then by input row, with a warning when a repeated stop has visits tied
+# on all three (duplicated events). Work is linear in the rows: only trips
+# with a repeated stop are timed, and each repeated group is visited once.
 pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NULL) {
   if (is.null(obs_seq)) obs_seq <- rep(NA_integer_, length(trip))
   if (is.null(obs_dep)) obs_dep <- rep(NA_real_, length(trip))
@@ -495,6 +550,28 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
     base$arrival_time[timed_rows],
     base$departure_time[timed_rows]
   )
+
+  # Planned stop_sequence already known for the events of the timed trips: an
+  # event's own number where the plan has its stop there, else the number of
+  # a stop the trip serves once, for the first visit observed there.
+  trip_rows <- which(trip %in% trip[obs_rows])
+  pos <- match(
+    paste(trip[trip_rows], obs_seq[trip_rows], sep = "\r"),
+    paste(base$trip_ref, base$base_sequence, sep = "\r")
+  )
+  own_ok <- !is.na(obs_seq[trip_rows]) & !is.na(pos)
+  own_ok[own_ok] <- base$stop_ref[pos[own_ok]] == stop[trip_rows][own_ok]
+  known <- rep(NA_real_, length(trip_rows))
+  known[own_ok] <- obs_seq[trip_rows][own_ok]
+  first_once <- is.na(obs_seq[trip_rows]) & rank[trip_rows] == 1L &
+    !(obs_key[trip_rows] %in% base_key[rep_rows])
+  known[first_once] <- base$base_sequence[match(obs_key[trip_rows][first_once], base_key)]
+  bounds <- sequence_bounds(trip[trip_rows], obs_secs[trip_rows], known)
+  lo <- rep(-Inf, length(trip))
+  hi <- rep(Inf, length(trip))
+  lo[trip_rows] <- bounds$lo
+  hi[trip_rows] <- bounds$hi
+
   obs_groups <- split(obs_rows, obs_key[obs_rows])
   plan_groups <- split(rep_rows, base_key[rep_rows])[names(obs_groups)]
   n_tied <- 0L
@@ -511,27 +588,19 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
       rank[rows[anchored]] <- base$visit_rank[plan[own[anchored]]]
       plan <- plan[-own[anchored]]
       rows <- rows[!anchored]
-      if (length(rows) == 0L) {
-        next
-      }
+    }
+    if (length(rows) == 0L) {
+      next
     }
     rank[rows] <- NA_integer_
     if (length(plan) == 0L) {
       next
     }
-    o <- obs_secs[rows]
-    p <- psecs[plan]
-    if (anyNA(o) || anyNA(p)) {
-      k <- seq_len(min(length(rows), length(plan)))
-      rank[rows[k]] <- base$visit_rank[plan[k]]
-      next
-    }
-    if (length(o) <= length(p)) {
-      rank[rows] <- base$visit_rank[plan][monotone_match(o, p)]
-    } else {
-      hit <- monotone_match(p, o)
-      rank[rows[hit]] <- base$visit_rank[plan]
-    }
+    seqs <- base$base_sequence[plan]
+    allowed <- outer(lo[rows], seqs, "<") & outer(hi[rows], seqs, ">")
+    hit <- match_visits(obs_secs[rows], psecs[plan], allowed)
+    paired <- !is.na(hit)
+    rank[rows[paired]] <- base$visit_rank[plan[hit[paired]]]
   }
   if (n_tied > 0L) {
     warning(
@@ -543,6 +612,27 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
     )
   }
   rank
+}
+
+# Arrival time of each row, else its departure.
+observed_time <- function(x) {
+  t <- x$arrival_time
+  t[is.na(t)] <- x$departure_time[is.na(t)]
+  t
+}
+
+# Number of trips whose times decrease somewhere along stop_sequence.
+n_trips_backwards <- function(trip, sequence, time) {
+  o <- order(trip, sequence)
+  trip <- trip[o]
+  time <- as.numeric(time[o])
+  n <- length(trip)
+  if (n < 2L) {
+    return(0L)
+  }
+  same_trip <- trip[-1L] == trip[-n]
+  back <- same_trip & !is.na(time[-1L]) & !is.na(time[-n]) & time[-1L] < time[-n]
+  length(unique(trip[-1L][back]))
 }
 
 # Served events of trips with a time before their service day's GTFS origin
@@ -585,21 +675,29 @@ drop_trips_before_origin <- function(served, tz) {
 #'
 #' In baseline mode each observed event is paired with at most one planned
 #' \code{stop_times} row. Where the planned trip serves a stop more than once
-#' (a loop), each observed visit takes the planned visit nearest in planned
-#' time, with observed and planned visits kept in the same order, so a missed
-#' first pass does not shift the second pass onto the first one's
-#' \code{stop_sequence}. A planned row without times (a non-timepoint) is
-#' placed by linear interpolation over \code{stop_sequence}; only where a trip
-#' has fewer than two timed rows does the k-th observed visit take the k-th
-#' planned one. An observed visit that carries the \code{stop_sequence} of one
-#' of the planned visits takes that visit before the others are paired.
-#' Observed visits are otherwise ordered by arrival; visits with the same
-#' arrival are ordered by their own \code{stop_sequence}, then by departure,
-#' and only then by input row, which warns (duplicated events are the usual
-#' cause). Output that still repeats a \code{(trip_id, stop_sequence)},
-#' because the events' own numbers disagree with the baseline's, warns too.
-#' An observed visit without a planned
-#' partner is numbered chronologically after the planned ones. The output
+#' (a loop):
+#' \itemize{
+#'   \item an observed visit that carries the \code{stop_sequence} of one of
+#'     the planned visits takes that visit;
+#'   \item any other visit may only take a planned visit whose
+#'     \code{stop_sequence} lies between those of the trip's stops observed
+#'     just before and just after it (stops the trip serves once, and visits
+#'     whose own number matches the plan), so it is never placed before a stop
+#'     it was observed after;
+#'   \item within those limits observed and planned visits pair in order, as
+#'     many as possible, each nearest in planned time, so a missed first pass
+#'     does not shift the second pass onto the first one's
+#'     \code{stop_sequence}.
+#' }
+#' A planned row without times (a non-timepoint) is placed by linear
+#' interpolation over \code{stop_sequence}; without planned times the pairs
+#' follow observation order. Observed visits are ordered by arrival; visits
+#' with the same arrival are ordered by their own \code{stop_sequence}, then
+#' by departure, and only then by input row, which warns (duplicated events
+#' are the usual cause). An observed visit without a planned partner is
+#' numbered chronologically after the planned ones, which can put it out of
+#' time order. Output that repeats a \code{(trip_id, stop_sequence)}, or whose
+#' times go backwards along \code{stop_sequence}, warns with the count. The output
 #' therefore has exactly one row per observed event.
 #'
 #' This is the entry point to use when each observed run should stay its own
@@ -802,8 +900,19 @@ rt2s_assemble <- function(
   if (n_dup_seq > 0L) {
     warning(
       n_dup_seq, " stop_times row(s) repeat the (trip_id, stop_sequence) of ",
-      "another row, which GTFS forbids. The events' own stop_sequence values ",
-      "disagree with the baseline's numbering; check them before publishing.",
+      "another row, which GTFS forbids. Events carry the same stop_sequence ",
+      "twice, or their own numbers disagree with the baseline's; check them ",
+      "before publishing.",
+      call. = FALSE
+    )
+  }
+  n_back <- n_trips_backwards(st$trip_ref, st$seq_final, observed_time(st))
+  if (n_back > 0L) {
+    warning(
+      n_back, " trip(s) have stop_times whose times go backwards along ",
+      "stop_sequence, which GTFS validators reject. Usually an observed visit ",
+      "had no planned visit it could take and was numbered after the planned ",
+      "stops (or events carry numbers that contradict their times).",
       call. = FALSE
     )
   }

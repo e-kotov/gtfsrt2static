@@ -632,25 +632,36 @@ test_that("events on another day are never rendered against the requested servic
   expect_identical(feed$calendar_dates$date, 20260723L)
 })
 
+# Warning messages raised while evaluating `expr`, which is returned as the
+# "value" attribute.
+collect_warnings <- function(expr) {
+  warned <- character()
+  value <- withCallingHandlers(expr, warning = function(w) {
+    warned <<- c(warned, conditionMessage(w))
+    invokeRestart("muffleWarning")
+  })
+  structure(warned, value = value)
+}
+
 test_that("visits tied on arrival at a repeated stop pair by departure, not input order", {
-  # Planned A(1) 06:00, B(2), A(3) 06:03, C(4). Both observed A visits are
-  # stamped 06:03:00; the one that left first is the earlier visit. The later
-  # one comes first in the input.
+  # Planned A(1) 06:00, B(2), A(3) 06:03, C(4); B is not observed. Both
+  # observed A visits are stamped 06:03:00; the one that left first is the
+  # earlier visit. The later one comes first in the input.
   baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
-  events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
+  events <- synthetic_events("T1", "2026-07-22", c("A", "A", "C"))
   t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
-  events$arrival_time <- t0 + c(180, 90, 180, 270)
-  events$departure_time <- t0 + c(220, 110, 190, 290)
+  events$arrival_time <- t0 + c(180, 180, 270)
+  events$departure_time <- t0 + c(220, 190, 290)
   feed <- rt2s_assemble(
     events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
   )
   st <- feed$stop_times
-  expect_identical(st$stop_id, c("A", "B", "A", "C"))
-  expect_identical(st$stop_sequence, 1:4)
+  expect_identical(st$stop_id, c("A", "A", "C"))
+  expect_identical(st$stop_sequence, c(1L, 3L, 4L))
   expect_identical(st$departure_time[st$stop_id == "A"], c("06:03:10", "06:03:40"))
   # Reordering the input rows changes nothing.
   feed2 <- rt2s_assemble(
-    events[c(3, 2, 1, 4)], baseline = baseline,
+    events[c(2, 1, 3)], baseline = baseline,
     service_date = "2026-07-22", tz = "UTC"
   )
   expect_identical(feed2$stop_times, st)
@@ -692,23 +703,28 @@ test_that("pair_visits breaks arrival ties by the event's stop_sequence, then de
   expect_identical(rank, c(2L, 1L))
 })
 
-test_that("fully tied visits at a repeated stop warn and still pair one-to-one", {
+test_that("a duplicated visit at a repeated stop warns and is not given a later loop visit", {
+  # The 06:00 visit at A is reported twice. The copy cannot be the second
+  # pass at A (planned after B), since it was observed before B: it is
+  # numbered after the planned stops, and both the tie and the resulting
+  # backwards times warn.
   baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
   events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
   events <- events[c(1, 2, 1, 4)]
-  expect_warning(
-    feed <- rt2s_assemble(
-      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
-    ),
-    "1 observed visit\\(s\\) at a stop that a trip serves more than once"
-  )
-  st <- feed$stop_times
+  warned <- collect_warnings(rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  ))
+  expect_true(any(grepl(
+    "1 observed visit\\(s\\) at a stop that a trip serves more than once", warned
+  )))
+  expect_true(any(grepl("1 trip\\(s\\) have stop_times whose times go backwards", warned)))
+  st <- attr(warned, "value")$stop_times
   expect_identical(nrow(st), 4L)
   expect_identical(nrow(duplicated_keys(st)), 0L)
-  expect_identical(st$stop_sequence, 1:4)
+  expect_identical(st$stop_sequence, c(1L, 2L, 4L, 10001L))
 })
 
-test_that("distinct visits at a repeated stop do not warn about ties", {
+test_that("distinct visits at a repeated stop do not warn", {
   baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
   events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
   expect_no_warning(rt2s_assemble(
@@ -717,17 +733,18 @@ test_that("distinct visits at a repeated stop do not warn about ties", {
 })
 
 test_that("a numbered and an unnumbered visit tied on arrival never share a stop_sequence", {
-  # Planned A(1) 06:00, B(2), A(3) 06:03, C(4). Both observed A visits are
-  # stamped 06:03:00; one carries its stop_sequence, the other does not. The
-  # numbered one keeps its planned visit and the other takes the remaining one,
-  # whichever of the two the numbered event is and in either input order.
+  # Planned A(1) 06:00, B(2), A(3) 06:03, C(4); B is not observed. Both
+  # observed A visits are stamped 06:03:00; one carries its stop_sequence, the
+  # other does not. The numbered one keeps its planned visit and the other
+  # takes the remaining one, whichever of the two the numbered event is and in
+  # either input order.
   baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
   t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
   tied_events <- function(numbered_seq, numbered_dep, other_dep) {
-    ev <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
-    ev$arrival_time <- t0 + c(180, 90, 180, 270)
-    ev$departure_time <- t0 + c(numbered_dep, 110, other_dep, 290)
-    ev$stop_sequence <- c(numbered_seq, NA, NA, NA)
+    ev <- synthetic_events("T1", "2026-07-22", c("A", "A", "C"))
+    ev$arrival_time <- t0 + c(180, 180, 270)
+    ev$departure_time <- t0 + c(numbered_dep, other_dep, 290)
+    ev$stop_sequence <- c(numbered_seq, NA, NA)
     ev
   }
   cases <- list(
@@ -735,17 +752,17 @@ test_that("a numbered and an unnumbered visit tied on arrival never share a stop
     earlier_numbered = tied_events(1L, 190, 200)
   )
   for (events in cases) {
-    for (rows in list(1:4, c(3L, 2L, 1L, 4L))) {
+    for (rows in list(1:3, c(2L, 1L, 3L))) {
       feed <- rt2s_assemble(
         events[rows], baseline = baseline,
         service_date = "2026-07-22", tz = "UTC"
       )
       st <- feed$stop_times
-      expect_identical(st$stop_sequence, 1:4)
-      expect_identical(st$stop_id, c("A", "B", "A", "C"))
+      expect_identical(st$stop_sequence, c(1L, 3L, 4L))
+      expect_identical(st$stop_id, c("A", "A", "C"))
       expect_identical(nrow(duplicated_keys(st)), 0L)
       # The visit that left first is the earlier one.
-      expect_identical(st$departure_time[c(1, 3)], c("06:03:10", "06:03:20"))
+      expect_identical(st$departure_time[1:2], c("06:03:10", "06:03:20"))
     }
   }
 })
@@ -763,4 +780,71 @@ test_that("an output that repeats a (trip_id, stop_sequence) warns", {
     "1 stop_times row\\(s\\) repeat the \\(trip_id, stop_sequence\\)"
   )
   expect_identical(nrow(duplicated_keys(feed$stop_times)), 1L)
+})
+
+test_that("a spurious extra visit at a loop stop never takes a planned visit out of order", {
+  # Planned A(1) 06:00, B(2) 06:01:30, A(3) 06:03, C(4) 06:04:30. A(1) is not
+  # observed; A is detected twice at the second pass, at 06:03:00 and 06:03:25.
+  # Only A(3) lies between the observed B and C, so the 06:03:00 visit takes
+  # it and the 06:03:25 one has no planned partner: it is numbered after the
+  # planned stops, never 1 (which would put it before B).
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  spurious <- function(sequence) {
+    ev <- synthetic_events("T1", "2026-07-22", c("B", "A", "A", "C"))
+    ev$arrival_time <- t0 + c(90, 180, 205, 270)
+    ev$departure_time <- ev$arrival_time + 20
+    ev$stop_sequence <- sequence
+    ev
+  }
+  cases <- list(
+    every_real_visit_numbered = spurious(c(2L, 3L, NA, 4L)),
+    only_loop_visit_numbered = spurious(c(NA, 3L, NA, NA)),
+    nothing_numbered = spurious(rep(NA_integer_, 4))
+  )
+  first <- NULL
+  for (events in cases) {
+    for (rows in list(1:4, 4:1)) {
+      warned <- collect_warnings(rt2s_assemble(
+        events[rows], baseline = baseline,
+        service_date = "2026-07-22", tz = "UTC"
+      ))
+      st <- attr(warned, "value")$stop_times
+      expect_identical(st$stop_id, c("B", "A", "C", "A"))
+      expect_identical(st$stop_sequence, c(2L, 3L, 4L, 10001L))
+      expect_identical(st$arrival_time, c("06:01:30", "06:03:00", "06:04:30", "06:03:25"))
+      expect_identical(nrow(duplicated_keys(st)), 0L)
+      # The fallback row sits after C although observed before it: that warns.
+      expect_identical(
+        as.character(warned),
+        paste(
+          "1 trip(s) have stop_times whose times go backwards along",
+          "stop_sequence, which GTFS validators reject. Usually an observed",
+          "visit had no planned visit it could take and was numbered after the",
+          "planned stops (or events carry numbers that contradict their times)."
+        )
+      )
+      if (is.null(first)) first <- st
+      expect_identical(st, first)
+    }
+  }
+  # Without the spurious detection the trip is numbered 2, 3, 4 and nothing warns.
+  events <- spurious(c(2L, 3L, NA, 4L))[-3]
+  expect_no_warning(feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  ))
+  expect_identical(feed$stop_times$stop_sequence, 2:4)
+})
+
+test_that("numbers that contradict the observed times warn about backwards times", {
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events(
+    "T1", "2026-07-22", c("A", "B", "A", "C"), stop_sequence = c(3L, 2L, 1L, 4L)
+  )
+  expect_warning(
+    rt2s_assemble(
+      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+    ),
+    "1 trip\\(s\\) have stop_times whose times go backwards"
+  )
 })
