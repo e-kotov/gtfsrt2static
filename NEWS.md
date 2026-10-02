@@ -9,8 +9,14 @@
   events are kept, and requesting a day with no events is an error.
 * `rt2s_events_from_trip_updates()` no longer loses a visit when a trip
   serves a stop more than once; visits are kept apart by `stop_sequence`.
+* `rt2s_events_from_trip_updates()` resolves a delay-only update by its
+  `stop_sequence` only when the baseline row at that sequence is the same
+  stop; otherwise it falls back to the stop and warns.
 * GTFS clock times are counted from noon minus 12h, as GTFS specifies, so
-  daylight-saving change days no longer shift times by an hour.
+  daylight-saving change days no longer shift times by an hour. Events in
+  the first hour of a fall-back day are attributed to the previous service
+  day; `rt2s_assemble()` drops such trips with a warning when they are
+  requested on the later day.
 
 # gtfsrt2static 0.8.0
 

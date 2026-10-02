@@ -292,11 +292,15 @@ rt2s_events_from_stop_times <- function(
   if ("pattern_ref" %in% names(dt)) {
     out[, pattern_ref := as.character(dt$pattern_ref)]
   }
-  # One service day per trip - the day of its first observed stop, in the
-  # times' own timezone - so a midnight-crossing trip keeps a single
-  # trip_ref instead of being split across two service dates.
+  # One service day per trip - the GTFS service day of its first observed
+  # stop, in the times' own timezone (the local date, except in the first
+  # hour of a daylight-saving fall-back day, which GTFS can only express on
+  # the day before) - so a midnight-crossing trip keeps a single trip_ref
+  # instead of being split across two service dates.
+  times_tz <- attr(out$arrival_time, "tzone")
+  if (is.null(times_tz)) times_tz <- ""
   out[,
-    service_date := as.Date(format(min(arrival_time), "%Y-%m-%d")),
+    service_date := gtfs_service_date(min(arrival_time), times_tz),
     by = trip_key
   ]
   # trip_ref: the official id verbatim where supplied (so baseline-mode
@@ -378,11 +382,16 @@ synthesize_trip_id <- function(dt, prefix = "rtd_") {
 #'
 #' A trip that serves a stop more than once (a loop) keeps one event per
 #' visit, told apart by \code{stop_sequence} as GTFS-Realtime requires for
-#' such stops. A report without \code{stop_sequence} takes the visit the
-#' trip's other reports for that stop name when they name one; when they name
-#' several it is ambiguous and dropped with a warning. Delay-only updates are
-#' resolved against the baseline row with the same \code{stop_sequence}, or,
-#' without one, the row of a stop the scheduled trip serves once.
+#' such stops. A stop counts as looped when one poll lists it under two
+#' \code{stop_sequence} values; elsewhere all reports of a stop form one
+#' visit even if a producer renumbers stops between polls. At a looped stop a
+#' report without \code{stop_sequence} is ambiguous and dropped with a
+#' warning. Delay-only updates are resolved against the baseline row with the
+#' same \code{stop_sequence} when that row is the same stop (a warning names
+#' sequences that point at another stop), else against a stop the scheduled
+#' trip serves once. A trip without \code{start_date} whose report falls in
+#' the first hour of a daylight-saving fall-back day belongs to the previous
+#' service day, as GTFS counts that hour past 24:00 of the day before.
 #'
 #' @param updates A data.frame as returned by
 #'   \code{gtfsrealtime::read_gtfsrt_trip_updates()}: one row per stop-time
@@ -449,7 +458,7 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     dt,
     i = no_date,
     j = "service_date",
-    value = as.Date(dt$file_timestamp[no_date], tz = tz)
+    value = gtfs_service_date(dt$file_timestamp[no_date], tz)
   )
   if (anyNA(dt$service_date)) {
     stop(
@@ -514,9 +523,11 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     dt[, stop_id := as.character(stop_id)]
     # One scheduled row per update, never a join that multiplies rows. An
     # update carrying stop_sequence is looked up by (trip, stop_sequence),
-    # which identifies the visit even on a loop; otherwise by (trip, stop),
-    # and only where the scheduled trip serves that stop once - a stop served
-    # twice cannot be resolved from stop_id alone and stays unresolved.
+    # which identifies the visit even on a loop - but only accepted when that
+    # row is the update's own stop, since a producer may number stops
+    # differently from the static feed (e.g. from 0). Otherwise it is looked
+    # up by (trip, stop), and only where the scheduled trip serves that stop
+    # once: a stop served twice cannot be resolved from stop_id alone.
     sched_trip <- as.character(sched$trip_id)
     sched_seq <- if (is.null(sched$stop_sequence)) {
       rep(NA_integer_, nrow(sched))
@@ -530,6 +541,19 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
       seq_key
     )
     row[is.na(dt$stop_sequence)] <- NA_integer_
+    upd_stop <- as.character(dt$stop_id)
+    other_stop <- !is.na(row) & !is.na(upd_stop) &
+      as.character(sched$stop_id)[row] != upd_stop
+    if (any(other_stop & (dt$delay_only_arr | dt$delay_only_dep))) {
+      warning(
+        sum(other_stop & (dt$delay_only_arr | dt$delay_only_dep)),
+        " delay-only update(s) carry a stop_sequence that names a different ",
+        "stop in the baseline trip; they were resolved by stop_id instead ",
+        "where the trip serves that stop once.",
+        call. = FALSE
+      )
+    }
+    row[other_stop] <- NA_integer_
     stop_key_s <- paste(sched_trip, as.character(sched$stop_id), sep = "\r")
     once <- which(!(duplicated(stop_key_s) | duplicated(stop_key_s, fromLast = TRUE)))
     by_stop <- once[match(paste(dt$trip_id, dt$stop_id, sep = "\r"), stop_key_s[once])]
@@ -569,8 +593,9 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     if (nrow(unresolved) > 0L) {
       warning(
         nrow(unresolved),
-        " delay-only update(s) reference trips/stops absent from the ",
-        "baseline and were left without times.",
+        " delay-only update(s) could not be matched to one baseline row (trip ",
+        "or stop absent, or a stop the trip serves more than once reported ",
+        "without a usable stop_sequence) and were left without times.",
         call. = FALSE
       )
     }
@@ -584,25 +609,23 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     as.character(stop_id),
     paste0("seq_", stop_sequence)
   )]
-  # A trip may serve a stop more than once (a loop); stop_sequence then tells
-  # the visits apart. A report that omits it takes the one stop_sequence the
-  # other reports of that trip and stop carry; where they carry several, the
-  # report cannot be attributed to a visit and is dropped with a warning.
-  # Where no report carries one, the stop's reports reduce to one visit.
-  data.table::set(dt, j = "visit_seq", value = as.integer(dt$stop_sequence))
-  seqs <- dt[
-    !is.na(visit_seq),
-    .(seq_min = min(visit_seq), seq_max = max(visit_seq)),
-    by = .(trip_id, service_date, stop_key)
-  ]
-  g <- match(
-    paste(dt$trip_id, dt$service_date, dt$stop_key, sep = "\r"),
-    paste(seqs$trip_id, seqs$service_date, seqs$stop_key, sep = "\r")
-  )
-  no_seq <- is.na(dt$visit_seq) & !is.na(g)
-  fill <- which(no_seq & seqs$seq_min[g] == seqs$seq_max[g])
-  data.table::set(dt, i = fill, j = "visit_seq", value = seqs$seq_min[g[fill]])
-  ambiguous <- no_seq & seqs$seq_min[g] != seqs$seq_max[g]
+  # A trip may serve a stop more than once (a loop). That is visible within
+  # one poll, which then lists the stop under two stop_sequence values; only
+  # for such stops are the visits kept apart by stop_sequence. Elsewhere all
+  # reports of the stop reduce to one visit whatever their stop_sequence, as
+  # a producer may renumber stops between polls. A report without
+  # stop_sequence at a looped stop cannot be attributed to a visit and is
+  # dropped with a warning.
+  has_seq <- !is.na(dt$stop_sequence)
+  stop_grp <- paste(dt$trip_id, dt$service_date, dt$stop_key, sep = "\r")
+  in_poll <- unique(data.table::data.table(
+    g = stop_grp[has_seq],
+    poll = dt$file_timestamp[has_seq],
+    s = as.integer(dt$stop_sequence[has_seq])
+  ))
+  looped <- unique(in_poll$g[duplicated(in_poll, by = c("g", "poll"))])
+  is_loop <- stop_grp %in% looped
+  ambiguous <- is_loop & !has_seq
   if (any(ambiguous)) {
     warning(
       sum(ambiguous),
@@ -612,9 +635,34 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     )
     keep <- !ambiguous
     dt <- dt[keep]
+    is_loop <- is_loop[keep]
   }
+  data.table::set(
+    dt,
+    j = "visit_seq",
+    value = data.table::fifelse(is_loop, as.integer(dt$stop_sequence), NA_integer_)
+  )
   data.table::setorderv(dt, "file_timestamp")
   reduced <- dt[, .SD[.N], by = .(trip_id, service_date, stop_key, visit_seq)]
+  # A latest report without stop_sequence keeps the visit's most recent one.
+  last_seq <- dt[
+    !is.na(stop_sequence),
+    .(last_seq = as.integer(stop_sequence[.N])),
+    by = .(trip_id, service_date, stop_key, visit_seq)
+  ]
+  no_seq <- which(is.na(reduced$stop_sequence))
+  if (length(no_seq) > 0L) {
+    key_of <- function(x) {
+      paste(x$trip_id, x$service_date, x$stop_key, x$visit_seq, sep = "\r")
+    }
+    hit <- match(key_of(reduced)[no_seq], key_of(last_seq))
+    data.table::set(
+      reduced,
+      i = no_seq,
+      j = "stop_sequence",
+      value = as.integer(last_seq$last_seq[hit])
+    )
+  }
 
   skipped <- reduced$stop_schedule_relationship %in% "SKIPPED"
   best_time <- data.table::fifelse(
@@ -650,7 +698,7 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     # stop_ref instead of failing the schema. Rows with neither were dropped
     # above, so stop_key is never "seq_NA".
     stop_ref = as.character(reduced$stop_key),
-    stop_sequence = reduced$visit_seq,
+    stop_sequence = as.integer(reduced$stop_sequence),
     arrival_time = arr_out,
     departure_time = dep_out,
     provenance = provenance,

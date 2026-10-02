@@ -10,7 +10,31 @@
 #' @return POSIXct vector.
 #' @noRd
 gtfs_day_origin <- function(service_date, tz) {
+  if (length(service_date) == 0L) {
+    # paste(character(0), "12:00:00") would recycle to " 12:00:00"
+    return(as.POSIXct(numeric(0), tz = tz))
+  }
   as.POSIXct(paste(as.character(service_date), "12:00:00"), tz = tz) - 43200
+}
+
+#' GTFS Service Date of an Absolute Time
+#'
+#' The local date of \code{time} in \code{tz}, except where \code{time}
+#' falls before that date's GTFS origin (the first hour of a daylight-saving
+#' fall-back day): such a time can only be written as a clock past 24:00 on
+#' the day before, so it belongs to that day.
+#'
+#' @param time POSIXct vector.
+#' @param tz Timezone of the service day.
+#' @return Date vector.
+#' @noRd
+gtfs_service_date <- function(time, tz) {
+  d <- as.Date(format(time, "%Y-%m-%d", tz = tz))
+  days <- unique(d[!is.na(d)])
+  origin <- gtfs_day_origin(days, tz)[match(d, days)]
+  before <- !is.na(time) & time < origin
+  d[before] <- d[before] - 1L
+  d
 }
 
 #' Format Absolute Times as GTFS Clock Strings (Allowing >24:00:00)

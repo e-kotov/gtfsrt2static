@@ -1178,3 +1178,15 @@ test_that("service-day windows follow the local clock on daylight-saving days", 
     )
   }
 })
+
+test_that("a time before the service day's GTFS origin matches no window", {
+  x <- as.POSIXct("2026-10-25 00:30:00", tz = "Europe/Berlin")
+  expect_identical(
+    rt2s_time_window(
+      x, list(night = c("00:00", "06:00")),
+      service_date = as.Date("2026-10-25"), tz = "Europe/Berlin",
+      na_label = "other"
+    ),
+    "other"
+  )
+})

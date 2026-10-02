@@ -77,6 +77,7 @@ rt2s_scaffold <- function(
   }
 
   served <- events[!(provenance %in% c("canceled", "skipped"))]
+  served <- drop_trips_before_origin(served, tz)
   if (nrow(served) == 0L) {
     stop(
       "No served stop events (everything is canceled/skipped); nothing to ",
@@ -124,13 +125,15 @@ rt2s_scaffold <- function(
   data.table::setorderv(st, c("trip_id", "arrival_time"))
   st[, seq_final := stop_sequence]
   st[is.na(seq_final), seq_final := seq_len(.N), by = trip_id]
-  stop_times <- st[, .(
-    trip_id,
-    arrival_time = gtfs_clock(arrival_time, service_date, tz),
-    departure_time = gtfs_clock(departure_time, service_date, tz),
-    stop_id = stop_ref,
-    stop_sequence = as.integer(seq_final)
-  )]
+  # Built outside `[`, where `tz` would resolve to an events column of that
+  # name.
+  stop_times <- data.table::data.table(
+    trip_id = st$trip_id,
+    arrival_time = gtfs_clock(st$arrival_time, st$service_date, tz),
+    departure_time = gtfs_clock(st$departure_time, st$service_date, tz),
+    stop_id = st$stop_ref,
+    stop_sequence = as.integer(st$seq_final)
+  )
   data.table::setorderv(stop_times, c("trip_id", "stop_sequence"))
 
   # --- stops ----------------------------------------------------------------
@@ -487,6 +490,34 @@ pair_visits <- function(trip, stop, obs_secs, base) {
   rank
 }
 
+# Served events of trips with a time before their service day's GTFS origin
+# cannot be written as clocks of that day: only the first hour of a
+# daylight-saving fall-back day lies before it, and GTFS expresses those times
+# past 24:00 on the day before. Such trips are dropped with a warning rather
+# than failing the whole feed; rt2s_events_from_*() attribute them to the
+# previous day already, so this catches explicit service dates only.
+drop_trips_before_origin <- function(served, tz) {
+  t <- served$arrival_time
+  t[is.na(t)] <- served$departure_time[is.na(t)]
+  days <- unique(served$service_date)
+  origin <- gtfs_day_origin(days, tz)[match(served$service_date, days)]
+  early <- !is.na(t) & t < origin
+  if (!any(early)) {
+    return(served)
+  }
+  trip_day <- paste(served$trip_ref, served$service_date, sep = "\r")
+  bad <- unique(trip_day[early])
+  warning(
+    length(bad),
+    " trip(s) have stop times before the start of their GTFS service day ",
+    "(the first hour of a daylight-saving fall-back day, which GTFS writes ",
+    "past 24:00 on the day before) and were dropped from this feed.",
+    call. = FALSE
+  )
+  keep <- !(trip_day %in% bad)
+  served[keep]
+}
+
 #' Assemble a Realized GTFS Feed from Observed Stop Events
 #'
 #' Turns observed stop events into one static GTFS feed describing the service
@@ -617,6 +648,7 @@ rt2s_assemble <- function(
   baseline_trip_ids <- as.character(baseline_trips$trip_id)
 
   served <- day_events[!(provenance %in% c("canceled", "skipped"))]
+  served <- drop_trips_before_origin(served, tz)
   matched <- served[trip_ref %in% baseline_trip_ids]
   unmatched_refs <- setdiff(unique(served$trip_ref), baseline_trip_ids)
   if (length(unmatched_refs) > 0L) {

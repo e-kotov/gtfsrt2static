@@ -309,6 +309,7 @@ test_that("a report without stop_sequence takes the visit only when it is unambi
     "2 stop-time update\\(s\\) without stop_sequence"
   )
   expect_identical(nrow(events), 4L)
+  events <- events[order(stop_sequence)]
   expect_identical(events$stop_sequence, 1:4)
   # B and C are served once: the late reports win there; A is ambiguous
   expect_identical(
@@ -334,4 +335,53 @@ test_that("delay-only updates use the GTFS service-day origin on a daylight-savi
     format(events$arrival_time, "%Y-%m-%d %H:%M:%S", tz = "Europe/Berlin"),
     "2026-03-29 08:00:00"
   )
+})
+
+test_that("a delay-only stop_sequence naming another baseline stop is not trusted", {
+  # The producer numbers from 0; the static feed from 1. stop_sequence 1 is B
+  # in the update but A in the baseline: resolve by stop_id instead.
+  t0 <- as.POSIXct("2026-07-22 05:00:00", tz = "UTC")
+  u <- data.frame(
+    trip_id = "T1", start_date = "20260722", stop_id = c("A", "B", "C"),
+    stop_sequence = 0:2, arrival_delay = 60, departure_delay = 60,
+    file_timestamp = t0
+  )
+  b <- list(stop_times = data.frame(
+    trip_id = "T1", stop_id = c("A", "B", "C"), stop_sequence = 1:3,
+    arrival_time = c("06:00:00", "07:00:00", "08:00:00"),
+    departure_time = c("06:00:00", "07:00:00", "08:00:00")
+  ))
+  expect_warning(
+    events <- rt2s_events_from_trip_updates(u, baseline = b),
+    "stop_sequence that names a different stop"
+  )
+  expect_identical(
+    format(events$arrival_time, "%H:%M:%S", tz = "UTC"),
+    c("06:01:00", "07:01:00", "08:01:00")
+  )
+})
+
+test_that("stop_sequence renumbered between polls does not split a stop's visit", {
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  poll <- function(seq, at) data.frame(
+    trip_id = "T1", start_date = "20260722", stop_id = c("A", "B", "C"),
+    stop_sequence = seq, arrival_time = t0 + c(0, 90, 180),
+    departure_time = t0 + c(20, 110, 200), file_timestamp = t0 + at
+  )
+  events <- rt2s_events_from_trip_updates(rbind(poll(1:3, 300), poll(2:4, 400)))
+  expect_identical(nrow(events), 3L)
+  expect_identical(events$stop_ref, c("A", "B", "C"))
+  expect_identical(events$stop_sequence, 2:4)
+})
+
+test_that("a poll in the first hour of a fall-back day belongs to the day before", {
+  # 2026-10-25 Europe/Berlin: the GTFS origin is 01:00 local, so 00:30 local
+  # is 24:30 on 2026-10-24.
+  u <- data.frame(
+    trip_id = "T1", stop_id = "A", stop_sequence = 1L,
+    arrival_time = as.POSIXct("2026-10-25 00:30:00", tz = "Europe/Berlin"),
+    file_timestamp = as.POSIXct("2026-10-25 00:31:00", tz = "Europe/Berlin")
+  )
+  events <- rt2s_events_from_trip_updates(u, tz = "Europe/Berlin")
+  expect_identical(events$service_date, as.Date("2026-10-24"))
 })

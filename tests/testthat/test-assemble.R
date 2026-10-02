@@ -532,6 +532,29 @@ test_that("clock strings and visit pairing use the GTFS origin on daylight-savin
   }
 })
 
+test_that("a trip before the GTFS origin of a fall-back day is dropped, not fatal", {
+  baseline <- synthetic_baseline(c("T0", "T1"), c("A", "B"))
+  baseline$agency$agency_timezone <- "Europe/Berlin"
+  day <- "2026-10-25"
+  events <- rbind(
+    synthetic_events("T0", day, c("A", "B"), start = "00:30:00"),
+    synthetic_events("T1", day, c("A", "B"), start = "06:00:00")
+  )
+  for (col in c("arrival_time", "departure_time")) {
+    events[[col]] <- as.POSIXct(
+      format(events[[col]], "%Y-%m-%d %H:%M:%S"), tz = "Europe/Berlin"
+    )
+  }
+  expect_warning(
+    feed <- rt2s_assemble(
+      events, baseline = baseline, service_date = day, tz = "Europe/Berlin"
+    ),
+    "1 trip\\(s\\) have stop times before the start of their GTFS service day"
+  )
+  expect_identical(unique(feed$stop_times$trip_id), "T1")
+  expect_identical(feed$stop_times$arrival_time, c("06:00:00", "06:01:30"))
+})
+
 test_that("rt2s_assemble keeps only the requested service_date in baseline mode", {
   events <- rbind(
     synthetic_events("T1", "2026-07-22", c("A", "B"), stop_sequence = 1:2),

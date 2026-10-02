@@ -41,9 +41,14 @@ a message.
 \details{
 A trip that serves a stop more than once (a loop) keeps one event per
 visit, told apart by \code{stop_sequence} as GTFS-Realtime requires for
-such stops. A report without \code{stop_sequence} takes the visit the
-trip's other reports for that stop name when they name one; when they name
-several it is ambiguous and dropped with a warning. Delay-only updates are
-resolved against the baseline row with the same \code{stop_sequence}, or,
-without one, the row of a stop the scheduled trip serves once.
+such stops. A stop counts as looped when one poll lists it under two
+\code{stop_sequence} values; elsewhere all reports of a stop form one
+visit even if a producer renumbers stops between polls. At a looped stop a
+report without \code{stop_sequence} is ambiguous and dropped with a
+warning. Delay-only updates are resolved against the baseline row with the
+same \code{stop_sequence} when that row is the same stop (a warning names
+sequences that point at another stop), else against a stop the scheduled
+trip serves once. A trip without \code{start_date} whose report falls in
+the first hour of a daylight-saving fall-back day belongs to the previous
+service day, as GTFS counts that hour past 24:00 of the day before.
 }

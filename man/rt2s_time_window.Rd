@@ -31,7 +31,8 @@ every non-missing time in a single \code{"all"} window.}
 \item{service_date}{Optional \code{Date} vector (recycled to \code{x}). When
 supplied with POSIXct \code{x}, times are measured from the service day's
 GTFS origin (noon minus 12h: midnight, except on a daylight-saving change
-day, where it keeps windows on the local clock), so a post-midnight stop of
+day, where it keeps windows on the local clock; a time before that origin
+matches no window), so a post-midnight stop of
 a trip attributed to the previous
 service date classifies as e.g. 24:30 (88200 s) rather than 00:30 - the
 GTFS >24:00:00 convention. Without it, POSIXct uses wall-clock time-of-day.}
