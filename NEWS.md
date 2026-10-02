@@ -1,57 +1,16 @@
-# gtfsrt2static (development version)
+# gtfsrt2static 0.8.1
 
 ## Bug fixes
 
-* `rt2s_assemble()` in baseline mode multiplied `stop_times` rows when a trip
-  visited the same stop more than once: observed events were joined to the
-  planned `stop_times` on (trip, stop) alone, so an event at a stop the trip
-  visits *k* times came out *k* times, and the resulting feed failed GTFS
-  validation with duplicate `(trip_id, stop_sequence)` keys. Observed and
-  planned visits are now paired one to one: where the planned trip serves a
-  stop more than once, each observed visit takes the planned visit nearest in
-  planned time, in order, so a missed first pass does not shift the second
-  pass onto the first one's `stop_sequence`. An observed visit without a
-  planned partner falls through to the existing chronological fallback, so
-  the output has exactly one row per observed event. An internal guard errors if the pairing ever changes the row count.
-  Output for trips that do not repeat a stop is unchanged.
-
-* The `service_date` argument of `rt2s_assemble()` was ignored. Inside the
-  data.table expressions the bare name resolved to the events column of the
-  same name, so the day filter compared the column with itself and never
-  dropped anything (both modes), and in baseline mode each event's clock
-  strings were rendered from its own day's midnight rather than the requested
-  day's. The argument is now honoured as documented in both modes: only events
-  on `service_date` are kept, clock strings and `calendar_dates` refer to that
-  day, and an error (`No events on service date`) is raised when no event falls
-  on it. Two consequences for callers: events spanning several days with an
-  explicit `service_date` now yield a one-day feed instead of all days' trips
-  under one service id; and a trip attributed to the following day (its first
-  observed stop is after midnight) now errors when the previous day's feed is
-  requested, instead of being written with clocks about 24 hours off.
-
-* `rt2s_events_from_trip_updates()` kept only one event per (trip, stop): on
-  a trip that serves a stop more than once, the latest report for one visit
-  replaced the other visit, which was lost. Visits are now kept apart by
-  `stop_sequence`, as GTFS-Realtime requires for such stops. A report without
-  `stop_sequence` takes the visit the trip's other reports for that stop
-  name, and is dropped with a warning when they name several. Delay-only
-  updates were joined to the baseline on (trip, stop), which matched every
-  scheduled visit of a repeated stop; they now resolve against the row with
-  the same `stop_sequence`, or, without one, only against a stop the trip
-  serves once.
-
-* GTFS clock times were counted from midnight of the service day. The GTFS
-  reference counts them from noon minus 12h, which differs from midnight by
-  an hour on daylight-saving change days, so `rt2s_assemble()` and
-  `rt2s_scaffold()` wrote times an hour off and delay-only Trip Updates were
-  resolved an hour off on those days. `rt2s_time_window()` (and the headway
-  and frequency functions that use it) placed times in the wrong window on
-  those days. All now use noon minus 12h. Other days are unchanged.
-
-* In `rt2s_assemble()`, a planned stop the trip serves more than once whose
-  `stop_times` rows carry no times (non-timepoints) is now placed by linear
-  interpolation over `stop_sequence` when pairing observed visits, rather
-  than falling back to visit order.
+* `rt2s_assemble()` no longer duplicates `stop_times` rows when a trip visits
+  a stop more than once. Repeated visits are paired with the planned visit
+  nearest in planned time, so a missed visit does not shift later ones.
+* `rt2s_assemble()` now honours its `service_date` argument: only that day's
+  events are kept, and requesting a day with no events is an error.
+* `rt2s_events_from_trip_updates()` no longer loses a visit when a trip
+  serves a stop more than once; visits are kept apart by `stop_sequence`.
+* GTFS clock times are counted from noon minus 12h, as GTFS specifies, so
+  daylight-saving change days no longer shift times by an hour.
 
 # gtfsrt2static 0.8.0
 
