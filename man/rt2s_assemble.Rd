@@ -64,7 +64,10 @@ first pass does not shift the second pass onto the first one's
 \code{stop_sequence}. A planned row without times (a non-timepoint) is
 placed by linear interpolation over \code{stop_sequence}; only where a trip
 has fewer than two timed rows does the k-th observed visit take the k-th
-planned one. An observed visit without a planned
+planned one. Observed visits are ordered by arrival; visits with the same
+arrival are ordered by their own \code{stop_sequence}, then by departure,
+and only then by input row, which warns (duplicated events are the usual
+cause). An observed visit without a planned
 partner is numbered chronologically after the planned ones. The output
 therefore has exactly one row per observed event.
 

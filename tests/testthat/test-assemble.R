@@ -631,3 +631,87 @@ test_that("events on another day are never rendered against the requested servic
   expect_identical(feed$stop_times$arrival_time, c("00:00:00", "00:01:30"))
   expect_identical(feed$calendar_dates$date, 20260723L)
 })
+
+test_that("visits tied on arrival at a repeated stop pair by departure, not input order", {
+  # Planned A(1) 06:00, B(2), A(3) 06:03, C(4). Both observed A visits are
+  # stamped 06:03:00; the one that left first is the earlier visit. The later
+  # one comes first in the input.
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  events$arrival_time <- t0 + c(180, 90, 180, 270)
+  events$departure_time <- t0 + c(220, 110, 190, 290)
+  feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  st <- feed$stop_times
+  expect_identical(st$stop_id, c("A", "B", "A", "C"))
+  expect_identical(st$stop_sequence, 1:4)
+  expect_identical(st$departure_time[st$stop_id == "A"], c("06:03:10", "06:03:40"))
+  # Reordering the input rows changes nothing.
+  feed2 <- rt2s_assemble(
+    events[c(3, 2, 1, 4)], baseline = baseline,
+    service_date = "2026-07-22", tz = "UTC"
+  )
+  expect_identical(feed2$stop_times, st)
+})
+
+test_that("pair_visits breaks arrival ties by the event's stop_sequence, then departure", {
+  base <- list(
+    trip_ref = rep("T1", 4), stop_ref = c("A", "B", "A", "C"),
+    base_sequence = 1:4, visit_rank = c(1L, 1L, 2L, 1L),
+    arrival_time = c("06:00:00", "06:01:30", "06:03:00", "06:04:30"),
+    departure_time = c("06:00:20", "06:01:50", "06:03:20", "06:04:50")
+  )
+  secs <- 6 * 3600 + 180
+  # Tied arrivals and departures; the event sequences say which is which.
+  rank <- pair_visits(
+    c("T1", "T1"), c("A", "A"), c(secs, secs), base,
+    obs_seq = c(3L, 1L), obs_dep = c(secs + 20, secs + 20)
+  )
+  expect_identical(rank, c(2L, 1L))
+  # The sequence outranks departure.
+  rank <- pair_visits(
+    c("T1", "T1"), c("A", "A"), c(secs, secs), base,
+    obs_seq = c(3L, 1L), obs_dep = c(secs + 10, secs + 20)
+  )
+  expect_identical(rank, c(2L, 1L))
+  # Without sequences, departure decides.
+  rank <- pair_visits(
+    c("T1", "T1"), c("A", "A"), c(secs, secs), base,
+    obs_dep = c(secs + 20, secs + 10)
+  )
+  expect_identical(rank, c(2L, 1L))
+  # The same order holds when the plan has no times to pair against.
+  untimed <- base
+  untimed$arrival_time <- untimed$departure_time <- rep(NA_character_, 4)
+  rank <- pair_visits(
+    c("T1", "T1"), c("A", "A"), c(secs, secs), untimed,
+    obs_dep = c(secs + 20, secs + 10)
+  )
+  expect_identical(rank, c(2L, 1L))
+})
+
+test_that("fully tied visits at a repeated stop warn and still pair one-to-one", {
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
+  events <- events[c(1, 2, 1, 4)]
+  expect_warning(
+    feed <- rt2s_assemble(
+      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+    ),
+    "1 observed visit\\(s\\) at a stop that a trip serves more than once"
+  )
+  st <- feed$stop_times
+  expect_identical(nrow(st), 4L)
+  expect_identical(nrow(duplicated_keys(st)), 0L)
+  expect_identical(st$stop_sequence, 1:4)
+})
+
+test_that("distinct visits at a repeated stop do not warn about ties", {
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
+  expect_no_warning(rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  ))
+})

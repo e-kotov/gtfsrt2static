@@ -369,12 +369,13 @@ rt2s_publishable <- function(feed) {
   )
 }
 
-# Rank of `x` within each (a, b) group, ties in row order and NA `x` last, as
-# frank(x, ties.method = "first") by group would give. One stable sort of the
-# whole table instead of a frank() call per group, which on a daily feed (one
-# group per trip and stop) dominated the assembly time.
-rank_within <- function(a, b, x) {
-  o <- order(a, b, x, na.last = TRUE, method = "radix")
+# Rank of `x` within each (a, b) group, NA `x` last, as frank(x, ties.method =
+# "first") by group would give; ties in `x` are broken by the vectors in `...`
+# in turn, then by row order. One stable sort of the whole table instead of a
+# frank() call per group, which on a daily feed (one group per trip and stop)
+# dominated the assembly time.
+rank_within <- function(a, b, x, ...) {
+  o <- order(a, b, x, ..., na.last = TRUE, method = "radix")
   out <- integer(length(x))
   out[o] <- data.table::rowid(a[o], b[o])
   out
@@ -439,16 +440,39 @@ planned_secs <- function(trip, sequence, arr, dep) {
   secs
 }
 
+# Number of elements of sorted vectors equal (NA equal to NA) to their
+# predecessor in every vector.
+n_tied_neighbours <- function(...) {
+  keys <- list(...)
+  k <- length(keys[[1L]])
+  if (k < 2L) {
+    return(0L)
+  }
+  tied <- rep(TRUE, k - 1L)
+  for (x in keys) {
+    p <- x[-k]
+    q <- x[-1L]
+    tied <- tied & ((is.na(p) & is.na(q)) | (!is.na(p) & !is.na(q) & p == q))
+  }
+  sum(tied)
+}
+
 # Planned-visit rank paired with each observed event. A stop the planned trip
 # serves once pairs by observation order (the first observed visit takes it,
 # later ones fall through). A stop the trip serves several times pairs each
 # observed visit with the planned visit nearest in planned time, keeping both
 # in order, so an unobserved first visit does not shift the second visit onto
 # the first one's stop_sequence. Without usable times on either side the group
-# keeps observation order. Work is linear in the rows: only trips with a
-# repeated stop are timed, and each repeated group is visited once.
-pair_visits <- function(trip, stop, obs_secs, base) {
-  rank <- rank_within(trip, stop, obs_secs)
+# keeps observation order. Observation order is by `obs_secs`; visits tied on
+# it are ordered by the event's own stop_sequence (`obs_seq`), then by
+# departure (`obs_dep`), and only then by input row, with a warning when a
+# repeated stop has visits tied on all three (duplicated events). Work is
+# linear in the rows: only trips with a repeated stop are timed, and each
+# repeated group is visited once.
+pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NULL) {
+  if (is.null(obs_seq)) obs_seq <- rep(NA_integer_, length(trip))
+  if (is.null(obs_dep)) obs_dep <- rep(NA_real_, length(trip))
+  rank <- rank_within(trip, stop, obs_secs, obs_seq, obs_dep)
   base_key <- paste(base$trip_ref, base$stop_ref, sep = "\r")
   rep_rows <- which(duplicated(base_key) | duplicated(base_key, fromLast = TRUE))
   if (length(rep_rows) == 0L) {
@@ -469,9 +493,11 @@ pair_visits <- function(trip, stop, obs_secs, base) {
   )
   obs_groups <- split(obs_rows, obs_key[obs_rows])
   plan_groups <- split(rep_rows, base_key[rep_rows])[names(obs_groups)]
+  n_tied <- 0L
   for (g in names(obs_groups)) {
     rows <- obs_groups[[g]]
-    rows <- rows[order(obs_secs[rows], rows)]
+    rows <- rows[order(obs_secs[rows], obs_seq[rows], obs_dep[rows], rows)]
+    n_tied <- n_tied + n_tied_neighbours(obs_secs[rows], obs_seq[rows], obs_dep[rows])
     plan <- plan_groups[[g]]
     plan <- plan[order(base$visit_rank[plan])]
     o <- obs_secs[rows]
@@ -486,6 +512,15 @@ pair_visits <- function(trip, stop, obs_secs, base) {
       rank[rows] <- NA_integer_
       rank[rows[hit]] <- base$visit_rank[plan]
     }
+  }
+  if (n_tied > 0L) {
+    warning(
+      n_tied, " observed visit(s) at a stop that a trip serves more than ",
+      "once have the same arrival, departure and stop_sequence as another ",
+      "visit of that trip, so they are paired with planned visits in input ",
+      "order. Duplicated events are the usual cause.",
+      call. = FALSE
+    )
   }
   rank
 }
@@ -536,7 +571,10 @@ drop_trips_before_origin <- function(served, tz) {
 #' \code{stop_sequence}. A planned row without times (a non-timepoint) is
 #' placed by linear interpolation over \code{stop_sequence}; only where a trip
 #' has fewer than two timed rows does the k-th observed visit take the k-th
-#' planned one. An observed visit without a planned
+#' planned one. Observed visits are ordered by arrival; visits with the same
+#' arrival are ordered by their own \code{stop_sequence}, then by departure,
+#' and only then by input row, which warns (duplicated events are the usual
+#' cause). An observed visit without a planned
 #' partner is numbered chronologically after the planned ones. The output
 #' therefore has exactly one row per observed event.
 #'
@@ -690,9 +728,11 @@ rt2s_assemble <- function(
   # service-day origin); an event without an arrival uses its departure.
   observed <- matched$arrival_time
   observed[is.na(observed)] <- matched$departure_time[is.na(observed)]
-  observed_secs <- as.numeric(difftime(
-    observed,
-    gtfs_day_origin(svc_date, tz),
+  day_origin <- gtfs_day_origin(svc_date, tz)
+  observed_secs <- as.numeric(difftime(observed, day_origin, units = "secs"))
+  departed_secs <- as.numeric(difftime(
+    matched$departure_time,
+    day_origin,
     units = "secs"
   ))
   data.table::set(
@@ -709,7 +749,9 @@ rt2s_assemble <- function(
         visit_rank = base_seq$visit_rank,
         arrival_time = baseline_st$arrival_time,
         departure_time = baseline_st$departure_time
-      )
+      ),
+      obs_seq = as.integer(matched$stop_sequence),
+      obs_dep = departed_secs
     )
   )
   st <- merge(

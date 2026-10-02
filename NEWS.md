@@ -1,3 +1,13 @@
+# gtfsrt2static (development version)
+
+## Bug fixes
+
+* `rt2s_assemble()`: when two observed visits to a stop the trip serves more
+  than once have the same arrival time, the visit with the lower event
+  `stop_sequence`, then the earlier departure, now pairs with the earlier
+  planned visit. Input row order decides only when all three tie, and that
+  case warns, since it usually means duplicated events.
+
 # gtfsrt2static 0.8.1
 
 ## Bug fixes
