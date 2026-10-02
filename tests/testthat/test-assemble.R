@@ -447,6 +447,45 @@ test_that("baseline mode pairs repeated stop visits by rank: one row per event",
   expect_identical(st[stop_sequence > 10000L, arrival_time], "06:06:00")
 })
 
+test_that("an unobserved first visit at a repeated stop does not take its stop_sequence", {
+  # Planned A(1) B(2) A(3) C(4); the first pass at A is not observed and the
+  # events carry no stop_sequence. The A that was observed is the second
+  # planned visit, so the output must stay in time order.
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events(
+    "T1", "2026-07-22", c("B", "A", "C"), start = "06:01:30"
+  )
+  feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  st <- feed$stop_times
+  expect_identical(nrow(st), 3L)
+  expect_identical(nrow(duplicated_keys(st)), 0L)
+  expect_identical(st$stop_id, c("B", "A", "C"))
+  expect_identical(st$stop_sequence, c(2L, 3L, 4L))
+  expect_identical(order(st$arrival_time), order(st$stop_sequence))
+})
+
+test_that("events columns named like rt2s_assemble locals do not change the feed", {
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
+  plain <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  masked <- data.table::copy(events)
+  masked[, `:=`(
+    svc_date = as.Date("2000-01-01"),
+    tz = "Asia/Tokyo",
+    keep_day = FALSE,
+    observed_secs = -1
+  )]
+  feed <- rt2s_assemble(
+    masked, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  expect_identical(feed$stop_times, plain$stop_times)
+  expect_identical(feed$calendar_dates, plain$calendar_dates)
+})
+
 test_that("rt2s_assemble keeps only the requested service_date in baseline mode", {
   events <- rbind(
     synthetic_events("T1", "2026-07-22", c("A", "B"), stop_sequence = 1:2),

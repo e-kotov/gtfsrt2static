@@ -377,6 +377,74 @@ rank_within <- function(a, b, x) {
   out
 }
 
+# Order-preserving pairing of two sorted numeric vectors with length(x) <=
+# length(y): returns, for each x[i], the index of its partner in y, the
+# partners strictly increasing and the summed |x - y| minimal. Dynamic
+# programming over (i, j); the inputs are the visits of one trip at one stop,
+# so they are tiny.
+monotone_match <- function(x, y) {
+  m <- length(x)
+  k <- length(y)
+  cost <- matrix(Inf, m, k)
+  from <- matrix(NA_integer_, m, k)
+  for (i in seq_len(m)) {
+    for (j in i:(k - m + i)) {
+      d <- abs(x[i] - y[j])
+      if (i == 1L) {
+        cost[i, j] <- d
+      } else {
+        prev <- cost[i - 1L, seq_len(j - 1L)]
+        b <- which.min(prev)
+        cost[i, j] <- d + prev[b]
+        from[i, j] <- b
+      }
+    }
+  }
+  out <- integer(m)
+  out[m] <- which.min(cost[m, ])
+  for (i in rev(seq_len(m - 1L))) {
+    out[i] <- from[i + 1L, out[i + 1L]]
+  }
+  out
+}
+
+# Planned-visit rank paired with each observed event. A stop the planned trip
+# serves once pairs by observation order (the first observed visit takes it,
+# later ones fall through). A stop the trip serves several times pairs each
+# observed visit with the planned visit nearest in planned time, keeping both
+# in order, so an unobserved first visit does not shift the second visit onto
+# the first one's stop_sequence. Without usable times on either side the group
+# keeps observation order.
+pair_visits <- function(trip, stop, obs_secs, base_seq) {
+  rank <- rank_within(trip, stop, obs_secs)
+  reps <- base_seq[, .N, by = c("trip_ref", "stop_ref")][N > 1L]
+  if (nrow(reps) == 0L) {
+    return(rank)
+  }
+  key <- paste(trip, stop, sep = "\r")
+  rep_key <- paste(reps$trip_ref, reps$stop_ref, sep = "\r")
+  base_key <- paste(base_seq$trip_ref, base_seq$stop_ref, sep = "\r")
+  for (g in intersect(rep_key, key)) {
+    rows <- which(key == g)
+    rows <- rows[order(obs_secs[rows], rows)]
+    plan <- which(base_key == g)
+    plan <- plan[order(base_seq$visit_rank[plan])]
+    o <- obs_secs[rows]
+    p <- base_seq$planned_secs[plan]
+    if (anyNA(o) || anyNA(p)) {
+      next
+    }
+    if (length(o) <= length(p)) {
+      rank[rows] <- base_seq$visit_rank[plan][monotone_match(o, p)]
+    } else {
+      hit <- monotone_match(p, o)
+      rank[rows] <- NA_integer_
+      rank[rows[hit]] <- base_seq$visit_rank[plan]
+    }
+  }
+  rank
+}
+
 #' Assemble a Realized GTFS Feed from Observed Stop Events
 #'
 #' Turns observed stop events into one static GTFS feed describing the service
@@ -387,12 +455,15 @@ rank_within <- function(a, b, x) {
 #' planned-vs-realized joins are direct. Without a baseline, a compliant feed is
 #' scaffolded from scratch via \code{\link{rt2s_scaffold}}.
 #'
-#' In baseline mode each observed event is paired with one planned
-#' \code{stop_times} row. A trip that visits the same stop more than once is
-#' paired visit by visit: the k-th observed visit at a stop (by arrival time)
-#' takes the k-th planned \code{stop_sequence} at that stop, and an observed
-#' visit beyond the planned count is numbered chronologically after the planned
-#' ones. The output therefore has exactly one row per observed event.
+#' In baseline mode each observed event is paired with at most one planned
+#' \code{stop_times} row. Where the planned trip serves a stop more than once
+#' (a loop), each observed visit takes the planned visit nearest in planned
+#' time, with observed and planned visits kept in the same order, so a missed
+#' first pass does not shift the second pass onto the first one's
+#' \code{stop_sequence}; without planned times at that stop, the k-th observed
+#' visit takes the k-th planned one. An observed visit without a planned
+#' partner is numbered chronologically after the planned ones. The output
+#' therefore has exactly one row per observed event.
 #'
 #' This is the entry point to use when each observed run should stay its own
 #' trip. To collapse many runs into one representative trip per time window with
@@ -433,9 +504,10 @@ rt2s_assemble <- function(
   events <- rt2s_events_validate(events)
 
   # `service_date` is both the argument and an events column. Inside a
-  # data.table bracket the bare symbol resolves to the column, so every day
-  # filter and clock origin below is computed from a local that no column can
-  # mask (`svc_date`, `keep_day`), never from `service_date` within `[`.
+  # data.table bracket a bare symbol resolves to a column of that name, so the
+  # day filter, the clock origin and the calendar dates below use the local
+  # `svc_date` only outside `[` (the filter indexes with the logical vector
+  # `keep_day`), never `service_date` or `svc_date` within a bracket.
   if (is.null(baseline)) {
     if (!is.null(service_date)) {
       svc_date <- as.Date(service_date)
@@ -522,18 +594,37 @@ rt2s_assemble <- function(
 
   # stop_sequence precedence: event value > baseline numbering > chronology.
   # A trip may visit the same stop more than once (a loop), so (trip, stop)
-  # does not identify a planned row. Pair visits by rank instead: the k-th
-  # observed visit at a stop (by arrival_time) takes the k-th planned row at
-  # that stop (by stop_sequence). An observed visit beyond the planned count
-  # finds no partner and falls through to the chronology fallback below. The
-  # join is therefore one-to-one and can never multiply rows.
-  base_seq <- baseline_st[, .(
-    trip_ref = as.character(trip_id),
-    stop_ref = as.character(stop_id),
-    base_sequence = as.integer(stop_sequence)
-  )]
-  base_seq[, visit_rank := rank_within(trip_ref, stop_ref, base_sequence)]
-  matched[, visit_rank := rank_within(trip_ref, stop_ref, arrival_time)]
+  # does not identify a planned row. Each observed event is paired with at
+  # most one planned visit at its stop (pair_visits(): by planned time where
+  # the stop repeats, else by order); an event without a partner falls
+  # through to the chronology fallback below. The join is therefore
+  # one-to-one and can never multiply rows.
+  base_seq <- data.table::data.table(
+    trip_ref = as.character(baseline_st$trip_id),
+    stop_ref = as.character(baseline_st$stop_id),
+    base_sequence = as.integer(baseline_st$stop_sequence),
+    planned_secs = if (is.null(baseline_st$arrival_time)) {
+      NA_real_
+    } else {
+      gtfs_time_secs(baseline_st$arrival_time)
+    }
+  )
+  data.table::set(
+    base_seq,
+    j = "visit_rank",
+    value = rank_within(base_seq$trip_ref, base_seq$stop_ref, base_seq$base_sequence)
+  )
+  observed_secs <- as.numeric(difftime(
+    matched$arrival_time,
+    as.POSIXct(paste(as.character(svc_date), "00:00:00"), tz = tz),
+    units = "secs"
+  ))
+  data.table::set(
+    matched,
+    j = "visit_rank",
+    value = pair_visits(matched$trip_ref, matched$stop_ref, observed_secs, base_seq)
+  )
+  base_seq[, planned_secs := NULL]
   st <- merge(
     matched,
     base_seq,
@@ -555,13 +646,15 @@ rt2s_assemble <- function(
   data.table::setorderv(st, c("trip_ref", "arrival_time"))
   st[is.na(seq_final), seq_final := seq_len(.N) + 10000L, by = trip_ref]
 
-  stop_times <- st[, .(
-    trip_id = trip_ref,
-    arrival_time = gtfs_clock(arrival_time, svc_date, tz),
-    departure_time = gtfs_clock(departure_time, svc_date, tz),
-    stop_id = stop_ref,
-    stop_sequence = as.integer(seq_final)
-  )]
+  # Built outside `[`: inside a data.table bracket a local such as `svc_date`
+  # or `tz` would resolve to an events column of the same name.
+  stop_times <- data.table::data.table(
+    trip_id = st$trip_ref,
+    arrival_time = gtfs_clock(st$arrival_time, svc_date, tz),
+    departure_time = gtfs_clock(st$departure_time, svc_date, tz),
+    stop_id = st$stop_ref,
+    stop_sequence = as.integer(st$seq_final)
+  )
   data.table::setorderv(stop_times, c("trip_id", "stop_sequence"))
 
   # Realized service: exactly the trips that ran, on one service id
@@ -570,8 +663,7 @@ rt2s_assemble <- function(
     as.character(baseline_trips$trip_id) %in% unique(matched$trip_ref)
   ]
   realized_trips <- data.table::copy(realized_trips)
-  svc_id <- service_id
-  realized_trips[, service_id := svc_id]
+  data.table::set(realized_trips, j = "service_id", value = service_id)
 
   feed <- lapply(baseline, data.table::as.data.table)
   feed$trips <- realized_trips

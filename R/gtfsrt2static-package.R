@@ -30,6 +30,7 @@ if (getRversion() >= "2.15.1") {
     "seq_final",
     "base_sequence",
     "visit_rank",
+    "planned_secs",
     "trip_schedule_relationship",
     "stop_schedule_relationship",
     "start_date",

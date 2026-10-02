@@ -7,11 +7,12 @@
   planned `stop_times` on (trip, stop) alone, so an event at a stop the trip
   visits *k* times came out *k* times, and the resulting feed failed GTFS
   validation with duplicate `(trip_id, stop_sequence)` keys. Observed and
-  planned visits are now paired visit by visit - the *k*-th observed visit at a
-  stop (by arrival time) takes the *k*-th planned `stop_sequence` at that stop,
-  and an observed visit beyond the planned count falls through to the existing
-  chronological fallback - so the output has exactly one row per observed
-  event. An internal guard errors if the pairing ever changes the row count.
+  planned visits are now paired one to one: where the planned trip serves a
+  stop more than once, each observed visit takes the planned visit nearest in
+  planned time, in order, so a missed first pass does not shift the second
+  pass onto the first one's `stop_sequence`. An observed visit without a
+  planned partner falls through to the existing chronological fallback, so
+  the output has exactly one row per observed event. An internal guard errors if the pairing ever changes the row count.
   Output for trips that do not repeat a stop is unchanged.
 
 * The `service_date` argument of `rt2s_assemble()` was ignored. Inside the
