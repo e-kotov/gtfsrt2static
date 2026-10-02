@@ -486,6 +486,52 @@ test_that("events columns named like rt2s_assemble locals do not change the feed
   expect_identical(feed$calendar_dates, plain$calendar_dates)
 })
 
+test_that("an unobserved first visit pairs correctly when the repeated stop is untimed", {
+  # The planned A rows are non-timepoints (no times): they are placed by
+  # interpolation over stop_sequence between the timed rows.
+  baseline <- synthetic_baseline("T1", c("S", "A", "B", "A", "C"))
+  baseline$stops <- rbind(
+    baseline$stops,
+    data.frame(stop_id = "S", stop_name = "S", stop_lat = 51.996, stop_lon = 9)
+  )
+  untimed <- baseline$stop_times$stop_id == "A"
+  baseline$stop_times$arrival_time[untimed] <- ""
+  baseline$stop_times$departure_time[untimed] <- ""
+  # Planned S 06:00, A (untimed), B 06:03, A (untimed), C 06:06: the A rows
+  # interpolate to 06:01:30 and 06:04:30. Observed S, B, A 06:04:30, C.
+  events <- synthetic_events("T1", "2026-07-22", c("S", "B", "A", "C"))
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  events$arrival_time <- t0 + c(0, 180, 270, 360)
+  events$departure_time <- events$arrival_time + 20
+  feed <- rt2s_assemble(
+    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  )
+  st <- feed$stop_times
+  expect_identical(st$stop_id, c("S", "B", "A", "C"))
+  expect_identical(st$stop_sequence, c(1L, 3L, 4L, 5L))
+})
+
+test_that("clock strings and visit pairing use the GTFS origin on daylight-saving days", {
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  baseline$agency$agency_timezone <- "Europe/Berlin"
+  # 2026-10-25 falls back at 03:00; 2026-03-29 springs forward at 02:00. On
+  # both days a local 06:01:30 must render as "06:01:30".
+  for (day in c("2026-10-25", "2026-03-29")) {
+    events <- synthetic_events("T1", day, c("B", "A", "C"), start = "06:01:30")
+    for (col in c("arrival_time", "departure_time")) {
+      events[[col]] <- as.POSIXct(
+        format(events[[col]], "%Y-%m-%d %H:%M:%S"), tz = "Europe/Berlin"
+      )
+    }
+    feed <- rt2s_assemble(
+      events, baseline = baseline, service_date = day, tz = "Europe/Berlin"
+    )
+    st <- feed$stop_times
+    expect_identical(st$arrival_time, c("06:01:30", "06:03:00", "06:04:30"))
+    expect_identical(st$stop_sequence, c(2L, 3L, 4L))
+  }
+})
+
 test_that("rt2s_assemble keeps only the requested service_date in baseline mode", {
   events <- rbind(
     synthetic_events("T1", "2026-07-22", c("A", "B"), stop_sequence = 1:2),

@@ -25,7 +25,8 @@ object or a path to a GTFS zip.}
 feed per service day in baseline mode). Defaults to the single date in
 \code{events}; must be given when events span several dates. In both
 modes only events whose \code{service_date} equals this day are kept and
-their clock strings are rendered relative to its midnight; it is an error
+their clock strings are rendered relative to its GTFS origin (noon minus
+12h: midnight, except on a daylight-saving change day); it is an error
 when no event falls on it.}
 
 \item{tz}{Timezone for GTFS clock strings. Defaults to the baseline's
@@ -60,8 +61,10 @@ In baseline mode each observed event is paired with at most one planned
 (a loop), each observed visit takes the planned visit nearest in planned
 time, with observed and planned visits kept in the same order, so a missed
 first pass does not shift the second pass onto the first one's
-\code{stop_sequence}; without planned times at that stop, the k-th observed
-visit takes the k-th planned one. An observed visit without a planned
+\code{stop_sequence}. A planned row without times (a non-timepoint) is
+placed by linear interpolation over \code{stop_sequence}; only where a trip
+has fewer than two timed rows does the k-th observed visit take the k-th
+planned one. An observed visit without a planned
 partner is numbered chronologically after the planned ones. The output
 therefore has exactly one row per observed event.
 

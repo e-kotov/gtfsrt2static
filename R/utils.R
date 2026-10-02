@@ -1,7 +1,23 @@
+#' Origin of a GTFS Service Day
+#'
+#' GTFS clock times count from "noon minus 12h" of the service day in the
+#' agency timezone. That is midnight on most days, but one hour off it on the
+#' days a daylight-saving change happens, where counting from midnight would
+#' put every later time an hour out.
+#'
+#' @param service_date Date vector.
+#' @param tz Timezone of the service day.
+#' @return POSIXct vector.
+#' @noRd
+gtfs_day_origin <- function(service_date, tz) {
+  as.POSIXct(paste(as.character(service_date), "12:00:00"), tz = tz) - 43200
+}
+
 #' Format Absolute Times as GTFS Clock Strings (Allowing >24:00:00)
 #'
 #' Converts absolute POSIXct times to "HH:MM:SS" strings relative to the
-#' midnight of the trip's service date in the given timezone. Post-midnight
+#' origin of the trip's service date (noon minus 12h, see
+#' \code{gtfs_day_origin()}) in the given timezone. Post-midnight
 #' stops of a trip attributed to the previous service date correctly render
 #' as hours >= 24, per the GTFS specification.
 #'
@@ -11,14 +27,17 @@
 #' @return Character vector of clock strings; NA in, NA out.
 #' @noRd
 gtfs_clock <- function(time, service_date, tz) {
-  midnight <- as.POSIXct(paste(as.character(service_date), "00:00:00"), tz = tz)
-  secs <- round(as.numeric(difftime(time, midnight, units = "secs")))
+  secs <- round(as.numeric(difftime(
+    time,
+    gtfs_day_origin(service_date, tz),
+    units = "secs"
+  )))
   out <- rep(NA_character_, length(secs))
   ok <- !is.na(secs)
   if (any(ok & secs < 0)) {
     stop(
       sum(ok & secs < 0),
-      " time(s) fall before the midnight of their service date; check the ",
+      " time(s) fall before the start of their service date; check the ",
       "'tz' argument and service date attribution.",
       call. = FALSE
     )

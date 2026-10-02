@@ -1163,3 +1163,18 @@ test_that("strict passage mode preserves dwell/revisit collapse and deterministi
   expect_identical(tied$n_headways, 1L)
   expect_identical(tied$headway_median, 3600L)
 })
+
+test_that("service-day windows follow the local clock on daylight-saving days", {
+  # GTFS times count from noon minus 12h, so on 2026-03-29 (spring forward)
+  # and 2026-10-25 (fall back) in Europe/Berlin a local 08:30 is in 08:00-09:00.
+  for (day in c("2026-03-29", "2026-10-25")) {
+    x <- as.POSIXct(paste(day, "08:30:00"), tz = "Europe/Berlin")
+    expect_identical(
+      rt2s_time_window(
+        x, list(am = c("08:00", "09:00")),
+        service_date = as.Date(day), tz = "Europe/Berlin"
+      ),
+      "am"
+    )
+  }
+})

@@ -50,7 +50,7 @@ test_that("delay-only updates require a baseline and resolve against it", {
 
   events <- rt2s_events_from_trip_updates(delay_only, baseline = make_baseline())
   # scheduled 06:31:30 + 90 s delay
-  expect_identical(format(events$arrival_time, "%H:%M:%S"), "06:33:00")
+  expect_identical(format(events$arrival_time, "%H:%M:%S", tz = "UTC"), "06:33:00")
 })
 
 test_that("rt2s_events_validate catches schema violations", {
@@ -247,4 +247,91 @@ test_that("stop_ref falls back to seq_<n> when only stop_sequence is present", {
   expect_false(anyNA(ev$stop_ref))
   expect_identical(ev[stop_ref == "seq_3", stop_sequence], 3L)
   expect_s3_class(rt2s_events_validate(ev), "data.table")
+})
+
+# A loop trip: stop A is served twice (stop_sequence 1 and 3).
+loop_updates <- function(poll_offsets = c(300, 400), times = TRUE) {
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  do.call(rbind, lapply(poll_offsets, function(poll) {
+    data.frame(
+      trip_id = "T1", route_id = "R1", direction_id = 0L,
+      start_date = "20260722", vehicle_id = "V1",
+      stop_id = c("A", "B", "A", "C"), stop_sequence = 1:4,
+      arrival_time = if (times) t0 + c(0, 90, 180, 270) else as.POSIXct(NA),
+      departure_time = if (times) t0 + c(20, 110, 200, 290) else as.POSIXct(NA),
+      arrival_delay = if (times) NA_real_ else 60,
+      departure_delay = if (times) NA_real_ else 60,
+      file_timestamp = t0 + poll
+    )
+  }))
+}
+
+loop_baseline <- function() {
+  list(stop_times = data.frame(
+    trip_id = "T1", stop_id = c("A", "B", "A", "C"), stop_sequence = 1:4,
+    arrival_time = c("06:00:00", "06:01:30", "06:03:00", "06:04:30"),
+    departure_time = c("06:00:20", "06:01:50", "06:03:20", "06:04:50")
+  ))
+}
+
+test_that("trip updates keep one event per visit when a trip serves a stop twice", {
+  events <- rt2s_events_from_trip_updates(loop_updates())
+  expect_identical(nrow(events), 4L)
+  expect_identical(events$stop_ref, c("A", "B", "A", "C"))
+  expect_identical(events$stop_sequence, 1:4)
+  expect_identical(
+    format(events$arrival_time, "%H:%M:%S", tz = "UTC"),
+    c("06:00:00", "06:01:30", "06:03:00", "06:04:30")
+  )
+})
+
+test_that("delay-only updates on a loop resolve against the visit's own scheduled row", {
+  events <- rt2s_events_from_trip_updates(
+    loop_updates(poll_offsets = 300, times = FALSE),
+    baseline = loop_baseline()
+  )
+  expect_identical(nrow(events), 4L)
+  expect_identical(events$stop_sequence, 1:4)
+  expect_identical(
+    format(events$arrival_time, "%H:%M:%S", tz = "UTC"),
+    c("06:01:00", "06:02:30", "06:04:00", "06:05:30")
+  )
+})
+
+test_that("a report without stop_sequence takes the visit only when it is unambiguous", {
+  u <- loop_updates()
+  late <- u[u$file_timestamp == max(u$file_timestamp), ]
+  late$stop_sequence <- NA_integer_
+  late$arrival_time <- late$arrival_time + 5
+  u <- rbind(u, transform(late, file_timestamp = file_timestamp + 100))
+  expect_warning(
+    events <- rt2s_events_from_trip_updates(u),
+    "2 stop-time update\\(s\\) without stop_sequence"
+  )
+  expect_identical(nrow(events), 4L)
+  expect_identical(events$stop_sequence, 1:4)
+  # B and C are served once: the late reports win there; A is ambiguous
+  expect_identical(
+    format(events$arrival_time, "%H:%M:%S", tz = "UTC"),
+    c("06:00:00", "06:01:35", "06:03:00", "06:04:35")
+  )
+})
+
+test_that("delay-only updates use the GTFS service-day origin on a daylight-saving day", {
+  # 2026-03-29 Europe/Berlin springs forward at 02:00: noon minus 12h is
+  # 23:00 local the evening before, so "08:00:00" is 08:00 local.
+  u <- data.frame(
+    trip_id = "T1", start_date = "20260329", stop_id = "A", stop_sequence = 1L,
+    arrival_delay = 0, departure_delay = 0,
+    file_timestamp = as.POSIXct("2026-03-29 09:00:00", tz = "Europe/Berlin")
+  )
+  b <- list(stop_times = data.frame(
+    trip_id = "T1", stop_id = "A", stop_sequence = 1L,
+    arrival_time = "08:00:00", departure_time = "08:00:00"
+  ))
+  events <- rt2s_events_from_trip_updates(u, baseline = b, tz = "Europe/Berlin")
+  expect_identical(
+    format(events$arrival_time, "%Y-%m-%d %H:%M:%S", tz = "Europe/Berlin"),
+    "2026-03-29 08:00:00"
+  )
 })

@@ -31,10 +31,19 @@ A validated observed stop events data.table.
 \description{
 Reduces an archive of Trip Updates (many successive predictions per trip
 and stop across polls) to observed stop events (see
-\link{observed-stop-events}): per (trip, service date, stop), the latest
-report wins - labeled \code{"observed"} when it was issued at or after
+\link{observed-stop-events}): per (trip, service date, stop visit), the
+latest report wins - labeled \code{"observed"} when it was issued at or after
 the vehicle's departure from the stop, \code{"predicted-last"} otherwise.
 \code{SKIPPED} stops and \code{CANCELED}/\code{DELETED} trips become
 explicit negative-information rows; \code{NO_DATA} rows are dropped with
 a message.
+}
+\details{
+A trip that serves a stop more than once (a loop) keeps one event per
+visit, told apart by \code{stop_sequence} as GTFS-Realtime requires for
+such stops. A report without \code{stop_sequence} takes the visit the
+trip's other reports for that stop name when they name one; when they name
+several it is ambiguous and dropped with a warning. Delay-only updates are
+resolved against the baseline row with the same \code{stop_sequence}, or,
+without one, the row of a stop the scheduled trip serves once.
 }

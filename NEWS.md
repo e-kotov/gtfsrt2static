@@ -29,6 +29,30 @@
   observed stop is after midnight) now errors when the previous day's feed is
   requested, instead of being written with clocks about 24 hours off.
 
+* `rt2s_events_from_trip_updates()` kept only one event per (trip, stop): on
+  a trip that serves a stop more than once, the latest report for one visit
+  replaced the other visit, which was lost. Visits are now kept apart by
+  `stop_sequence`, as GTFS-Realtime requires for such stops. A report without
+  `stop_sequence` takes the visit the trip's other reports for that stop
+  name, and is dropped with a warning when they name several. Delay-only
+  updates were joined to the baseline on (trip, stop), which matched every
+  scheduled visit of a repeated stop; they now resolve against the row with
+  the same `stop_sequence`, or, without one, only against a stop the trip
+  serves once.
+
+* GTFS clock times were counted from midnight of the service day. The GTFS
+  reference counts them from noon minus 12h, which differs from midnight by
+  an hour on daylight-saving change days, so `rt2s_assemble()` and
+  `rt2s_scaffold()` wrote times an hour off and delay-only Trip Updates were
+  resolved an hour off on those days. `rt2s_time_window()` (and the headway
+  and frequency functions that use it) placed times in the wrong window on
+  those days. All now use noon minus 12h. Other days are unchanged.
+
+* In `rt2s_assemble()`, a planned stop the trip serves more than once whose
+  `stop_times` rows carry no times (non-timepoints) is now placed by linear
+  interpolation over `stop_sequence` when pairing observed visits, rather
+  than falling back to visit order.
+
 # gtfsrt2static 0.8.0
 
 ## New arguments

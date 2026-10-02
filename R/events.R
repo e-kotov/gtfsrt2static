@@ -369,12 +369,20 @@ synthesize_trip_id <- function(dt, prefix = "rtd_") {
 #'
 #' Reduces an archive of Trip Updates (many successive predictions per trip
 #' and stop across polls) to observed stop events (see
-#' \link{observed-stop-events}): per (trip, service date, stop), the latest
-#' report wins - labeled \code{"observed"} when it was issued at or after
+#' \link{observed-stop-events}): per (trip, service date, stop visit), the
+#' latest report wins - labeled \code{"observed"} when it was issued at or after
 #' the vehicle's departure from the stop, \code{"predicted-last"} otherwise.
 #' \code{SKIPPED} stops and \code{CANCELED}/\code{DELETED} trips become
 #' explicit negative-information rows; \code{NO_DATA} rows are dropped with
 #' a message.
+#'
+#' A trip that serves a stop more than once (a loop) keeps one event per
+#' visit, told apart by \code{stop_sequence} as GTFS-Realtime requires for
+#' such stops. A report without \code{stop_sequence} takes the visit the
+#' trip's other reports for that stop name when they name one; when they name
+#' several it is ambiguous and dropped with a warning. Delay-only updates are
+#' resolved against the baseline row with the same \code{stop_sequence}, or,
+#' without one, the row of a stop the scheduled trip serves once.
 #'
 #' @param updates A data.frame as returned by
 #'   \code{gtfsrealtime::read_gtfsrt_trip_updates()}: one row per stop-time
@@ -418,9 +426,11 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
       dt[, (col) := optional[[col]]]
     }
   }
+  # Locals such as `tz` are passed outside data.table brackets throughout:
+  # inside `[` a bare symbol resolves to an updates column of that name.
   for (col in c("arrival_time", "departure_time")) {
     if (!inherits(dt[[col]], "POSIXct")) {
-      dt[, (col) := as.POSIXct(dt[[col]], tz = tz)]
+      data.table::set(dt, j = col, value = as.POSIXct(dt[[col]], tz = tz))
     }
   }
 
@@ -434,10 +444,13 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
 
   # Service date: explicit start_date, else the poll's local date
   dt[, service_date := parse_start_date(start_date)]
-  dt[
-    is.na(service_date),
-    service_date := as.Date(file_timestamp, tz = tz)
-  ]
+  no_date <- which(is.na(dt$service_date))
+  data.table::set(
+    dt,
+    i = no_date,
+    j = "service_date",
+    value = as.Date(dt$file_timestamp[no_date], tz = tz)
+  )
   if (anyNA(dt$service_date)) {
     stop(
       "Could not determine a service date for some updates (missing both ",
@@ -498,36 +511,57 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
       c("trip_id", "stop_id", "arrival_time", "departure_time"),
       "baseline stop_times"
     )
-    sched <- sched[, .(
-      trip_id = as.character(trip_id),
-      stop_id = as.character(stop_id),
-      sched_arr = as.character(arrival_time),
-      sched_dep = as.character(departure_time)
-    )]
     dt[, stop_id := as.character(stop_id)]
-    dt <- merge(
-      dt,
-      sched,
-      by.x = c("trip_id", "stop_id"),
-      by.y = c("trip_id", "stop_id"),
-      all.x = TRUE,
-      sort = FALSE
+    # One scheduled row per update, never a join that multiplies rows. An
+    # update carrying stop_sequence is looked up by (trip, stop_sequence),
+    # which identifies the visit even on a loop; otherwise by (trip, stop),
+    # and only where the scheduled trip serves that stop once - a stop served
+    # twice cannot be resolved from stop_id alone and stays unresolved.
+    sched_trip <- as.character(sched$trip_id)
+    sched_seq <- if (is.null(sched$stop_sequence)) {
+      rep(NA_integer_, nrow(sched))
+    } else {
+      as.integer(sched$stop_sequence)
+    }
+    seq_key <- paste(sched_trip, sched_seq, sep = "\r")
+    seq_key[is.na(sched_seq)] <- NA_character_
+    row <- match(
+      paste(dt$trip_id, as.integer(dt$stop_sequence), sep = "\r"),
+      seq_key
     )
+    row[is.na(dt$stop_sequence)] <- NA_integer_
+    stop_key_s <- paste(sched_trip, as.character(sched$stop_id), sep = "\r")
+    once <- which(!(duplicated(stop_key_s) | duplicated(stop_key_s, fromLast = TRUE)))
+    by_stop <- once[match(paste(dt$trip_id, dt$stop_id, sep = "\r"), stop_key_s[once])]
+    row[is.na(row)] <- by_stop[is.na(row)]
+    sched_arr <- as.character(sched$arrival_time)[row]
+    sched_dep <- as.character(sched$departure_time)[row]
     clock_to_posix <- function(clock, service_date) {
+      if (length(clock) == 0L) {
+        return(as.POSIXct(numeric(0), tz = tz))
+      }
       parts <- data.table::tstrsplit(clock, ":", fixed = TRUE)
       secs <- as.numeric(parts[[1]]) * 3600 +
         as.numeric(parts[[2]]) * 60 +
         as.numeric(parts[[3]])
-      as.POSIXct(paste(as.character(service_date), "00:00:00"), tz = tz) + secs
+      gtfs_day_origin(service_date, tz) + secs
     }
-    dt[
-      delay_only_arr & !is.na(sched_arr),
-      arrival_time := clock_to_posix(sched_arr, service_date) + arrival_delay
-    ]
-    dt[
-      delay_only_dep & !is.na(sched_dep),
-      departure_time := clock_to_posix(sched_dep, service_date) + departure_delay
-    ]
+    i_arr <- which(dt$delay_only_arr & !is.na(sched_arr))
+    data.table::set(
+      dt,
+      i = i_arr,
+      j = "arrival_time",
+      value = clock_to_posix(sched_arr[i_arr], dt$service_date[i_arr]) +
+        dt$arrival_delay[i_arr]
+    )
+    i_dep <- which(dt$delay_only_dep & !is.na(sched_dep))
+    data.table::set(
+      dt,
+      i = i_dep,
+      j = "departure_time",
+      value = clock_to_posix(sched_dep[i_dep], dt$service_date[i_dep]) +
+        dt$departure_delay[i_dep]
+    )
     unresolved <- dt[
       (delay_only_arr & is.na(arrival_time)) |
         (delay_only_dep & is.na(departure_time))
@@ -540,18 +574,47 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
         call. = FALSE
       )
     }
-    dt[, c("sched_arr", "sched_dep") := NULL]
   }
   dt[, c("delay_only_arr", "delay_only_dep") := NULL]
 
-  # Reduce successive predictions: latest report per (trip, date, stop) wins
+  # Reduce successive predictions: latest report per (trip, date, stop,
+  # visit) wins
   dt[, stop_key := ifelse(
     !is.na(stop_id) & nzchar(as.character(stop_id)),
     as.character(stop_id),
     paste0("seq_", stop_sequence)
   )]
+  # A trip may serve a stop more than once (a loop); stop_sequence then tells
+  # the visits apart. A report that omits it takes the one stop_sequence the
+  # other reports of that trip and stop carry; where they carry several, the
+  # report cannot be attributed to a visit and is dropped with a warning.
+  # Where no report carries one, the stop's reports reduce to one visit.
+  data.table::set(dt, j = "visit_seq", value = as.integer(dt$stop_sequence))
+  seqs <- dt[
+    !is.na(visit_seq),
+    .(seq_min = min(visit_seq), seq_max = max(visit_seq)),
+    by = .(trip_id, service_date, stop_key)
+  ]
+  g <- match(
+    paste(dt$trip_id, dt$service_date, dt$stop_key, sep = "\r"),
+    paste(seqs$trip_id, seqs$service_date, seqs$stop_key, sep = "\r")
+  )
+  no_seq <- is.na(dt$visit_seq) & !is.na(g)
+  fill <- which(no_seq & seqs$seq_min[g] == seqs$seq_max[g])
+  data.table::set(dt, i = fill, j = "visit_seq", value = seqs$seq_min[g[fill]])
+  ambiguous <- no_seq & seqs$seq_min[g] != seqs$seq_max[g]
+  if (any(ambiguous)) {
+    warning(
+      sum(ambiguous),
+      " stop-time update(s) without stop_sequence name a stop their trip ",
+      "visits more than once and were dropped: the visit is ambiguous.",
+      call. = FALSE
+    )
+    keep <- !ambiguous
+    dt <- dt[keep]
+  }
   data.table::setorderv(dt, "file_timestamp")
-  reduced <- dt[, .SD[.N], by = .(trip_id, service_date, stop_key)]
+  reduced <- dt[, .SD[.N], by = .(trip_id, service_date, stop_key, visit_seq)]
 
   skipped <- reduced$stop_schedule_relationship %in% "SKIPPED"
   best_time <- data.table::fifelse(
@@ -587,7 +650,7 @@ rt2s_events_from_trip_updates <- function(updates, baseline = NULL, tz = "UTC") 
     # stop_ref instead of failing the schema. Rows with neither were dropped
     # above, so stop_key is never "seq_NA".
     stop_ref = as.character(reduced$stop_key),
-    stop_sequence = as.integer(reduced$stop_sequence),
+    stop_sequence = reduced$visit_seq,
     arrival_time = arr_out,
     departure_time = dep_out,
     provenance = provenance,

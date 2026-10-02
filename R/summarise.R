@@ -27,7 +27,8 @@ hms_to_secs <- function(x) {
 #' Seconds since midnight for time-of-day bucketing.
 #'
 #' With \code{service_date}, returns seconds since the \emph{service day's}
-#' midnight (in \code{tz}), so a post-midnight stop attributed to the previous
+#' GTFS origin (noon minus 12h in \code{tz}: midnight, except on a
+#' daylight-saving change day), so a post-midnight stop attributed to the previous
 #' service date exceeds 86400 (e.g. 00:30 next day -> 88200) - matching the
 #' GTFS >24:00:00 service-day convention and letting overnight windows such as
 #' c("22:00", "26:00") work. Without it, POSIXct falls back to wall-clock
@@ -44,11 +45,8 @@ time_of_day_secs <- function(x, service_date = NULL, tz = NULL) {
     if (!is.null(service_date)) {
       if (is.null(tz) || !nzchar(tz)) tz <- attr(x, "tzone")
       if (is.null(tz) || !nzchar(tz)) tz <- "UTC"
-      midnight <- as.POSIXct(
-        paste(as.character(as.Date(service_date)), "00:00:00"),
-        tz = tz
-      )
-      return(as.numeric(difftime(x, midnight, units = "secs")))
+      origin <- gtfs_day_origin(as.Date(service_date), tz)
+      return(as.numeric(difftime(x, origin, units = "secs")))
     }
     lt <- as.POSIXlt(x)
     return(lt$hour * 3600 + lt$min * 60 + lt$sec)
@@ -380,7 +378,9 @@ compute_stop_order <- function(dt_off) {
 #'   every non-missing time in a single \code{"all"} window.
 #' @param service_date Optional \code{Date} vector (recycled to \code{x}). When
 #'   supplied with POSIXct \code{x}, times are measured from the service day's
-#'   midnight, so a post-midnight stop of a trip attributed to the previous
+#'   GTFS origin (noon minus 12h: midnight, except on a daylight-saving change
+#'   day, where it keeps windows on the local clock), so a post-midnight stop of
+#'   a trip attributed to the previous
 #'   service date classifies as e.g. 24:30 (88200 s) rather than 00:30 - the
 #'   GTFS >24:00:00 convention. Without it, POSIXct uses wall-clock time-of-day.
 #' @param tz Timezone of the service day (defaults to \code{x}'s own timezone,

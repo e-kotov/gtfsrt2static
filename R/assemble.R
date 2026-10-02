@@ -408,38 +408,80 @@ monotone_match <- function(x, y) {
   out
 }
 
+# Planned seconds after the service-day origin for baseline stop_times rows
+# of whole trips: arrival_time, else departure_time; a row with neither (a
+# non-timepoint) is interpolated linearly over stop_sequence between the
+# trip's timed rows. Rows that cannot be placed stay NA.
+planned_secs <- function(trip, sequence, arr, dep) {
+  secs <- if (is.null(arr)) rep(NA_real_, length(trip)) else gtfs_time_secs(arr)
+  if (!is.null(dep)) {
+    no_arr <- is.na(secs)
+    secs[no_arr] <- gtfs_time_secs(dep[no_arr])
+  }
+  untimed <- unique(trip[is.na(secs)])
+  if (length(untimed) == 0L) {
+    return(secs)
+  }
+  by_trip <- split(seq_along(trip), trip)[untimed]
+  for (r in by_trip) {
+    timed <- r[!is.na(secs[r])]
+    if (length(timed) < 2L || anyNA(sequence[r])) {
+      next
+    }
+    gap <- r[is.na(secs[r])]
+    secs[gap] <- stats::approx(
+      sequence[timed], secs[timed], xout = sequence[gap], rule = 2, ties = mean
+    )$y
+  }
+  secs
+}
+
 # Planned-visit rank paired with each observed event. A stop the planned trip
 # serves once pairs by observation order (the first observed visit takes it,
 # later ones fall through). A stop the trip serves several times pairs each
 # observed visit with the planned visit nearest in planned time, keeping both
 # in order, so an unobserved first visit does not shift the second visit onto
 # the first one's stop_sequence. Without usable times on either side the group
-# keeps observation order.
-pair_visits <- function(trip, stop, obs_secs, base_seq) {
+# keeps observation order. Work is linear in the rows: only trips with a
+# repeated stop are timed, and each repeated group is visited once.
+pair_visits <- function(trip, stop, obs_secs, base) {
   rank <- rank_within(trip, stop, obs_secs)
-  reps <- base_seq[, .N, by = c("trip_ref", "stop_ref")][N > 1L]
-  if (nrow(reps) == 0L) {
+  base_key <- paste(base$trip_ref, base$stop_ref, sep = "\r")
+  rep_rows <- which(duplicated(base_key) | duplicated(base_key, fromLast = TRUE))
+  if (length(rep_rows) == 0L) {
     return(rank)
   }
-  key <- paste(trip, stop, sep = "\r")
-  rep_key <- paste(reps$trip_ref, reps$stop_ref, sep = "\r")
-  base_key <- paste(base_seq$trip_ref, base_seq$stop_ref, sep = "\r")
-  for (g in intersect(rep_key, key)) {
-    rows <- which(key == g)
+  obs_key <- paste(trip, stop, sep = "\r")
+  obs_rows <- which(obs_key %in% base_key[rep_rows])
+  if (length(obs_rows) == 0L) {
+    return(rank)
+  }
+  timed_rows <- which(base$trip_ref %in% trip[obs_rows])
+  psecs <- rep(NA_real_, length(base_key))
+  psecs[timed_rows] <- planned_secs(
+    base$trip_ref[timed_rows],
+    base$base_sequence[timed_rows],
+    base$arrival_time[timed_rows],
+    base$departure_time[timed_rows]
+  )
+  obs_groups <- split(obs_rows, obs_key[obs_rows])
+  plan_groups <- split(rep_rows, base_key[rep_rows])[names(obs_groups)]
+  for (g in names(obs_groups)) {
+    rows <- obs_groups[[g]]
     rows <- rows[order(obs_secs[rows], rows)]
-    plan <- which(base_key == g)
-    plan <- plan[order(base_seq$visit_rank[plan])]
+    plan <- plan_groups[[g]]
+    plan <- plan[order(base$visit_rank[plan])]
     o <- obs_secs[rows]
-    p <- base_seq$planned_secs[plan]
+    p <- psecs[plan]
     if (anyNA(o) || anyNA(p)) {
       next
     }
     if (length(o) <= length(p)) {
-      rank[rows] <- base_seq$visit_rank[plan][monotone_match(o, p)]
+      rank[rows] <- base$visit_rank[plan][monotone_match(o, p)]
     } else {
       hit <- monotone_match(p, o)
       rank[rows] <- NA_integer_
-      rank[rows[hit]] <- base_seq$visit_rank[plan]
+      rank[rows[hit]] <- base$visit_rank[plan]
     }
   }
   rank
@@ -460,8 +502,10 @@ pair_visits <- function(trip, stop, obs_secs, base_seq) {
 #' (a loop), each observed visit takes the planned visit nearest in planned
 #' time, with observed and planned visits kept in the same order, so a missed
 #' first pass does not shift the second pass onto the first one's
-#' \code{stop_sequence}; without planned times at that stop, the k-th observed
-#' visit takes the k-th planned one. An observed visit without a planned
+#' \code{stop_sequence}. A planned row without times (a non-timepoint) is
+#' placed by linear interpolation over \code{stop_sequence}; only where a trip
+#' has fewer than two timed rows does the k-th observed visit take the k-th
+#' planned one. An observed visit without a planned
 #' partner is numbered chronologically after the planned ones. The output
 #' therefore has exactly one row per observed event.
 #'
@@ -477,7 +521,8 @@ pair_visits <- function(trip, stop, obs_secs, base_seq) {
 #'   feed per service day in baseline mode). Defaults to the single date in
 #'   \code{events}; must be given when events span several dates. In both
 #'   modes only events whose \code{service_date} equals this day are kept and
-#'   their clock strings are rendered relative to its midnight; it is an error
+#'   their clock strings are rendered relative to its GTFS origin (noon minus
+#'   12h: midnight, except on a daylight-saving change day); it is an error
 #'   when no event falls on it.
 #' @param tz Timezone for GTFS clock strings. Defaults to the baseline's
 #'   \code{agency_timezone} (baseline mode) or "UTC".
@@ -602,29 +647,39 @@ rt2s_assemble <- function(
   base_seq <- data.table::data.table(
     trip_ref = as.character(baseline_st$trip_id),
     stop_ref = as.character(baseline_st$stop_id),
-    base_sequence = as.integer(baseline_st$stop_sequence),
-    planned_secs = if (is.null(baseline_st$arrival_time)) {
-      NA_real_
-    } else {
-      gtfs_time_secs(baseline_st$arrival_time)
-    }
+    base_sequence = as.integer(baseline_st$stop_sequence)
   )
   data.table::set(
     base_seq,
     j = "visit_rank",
     value = rank_within(base_seq$trip_ref, base_seq$stop_ref, base_seq$base_sequence)
   )
+  # Observed times on the planned clock's scale (seconds after the GTFS
+  # service-day origin); an event without an arrival uses its departure.
+  observed <- matched$arrival_time
+  observed[is.na(observed)] <- matched$departure_time[is.na(observed)]
   observed_secs <- as.numeric(difftime(
-    matched$arrival_time,
-    as.POSIXct(paste(as.character(svc_date), "00:00:00"), tz = tz),
+    observed,
+    gtfs_day_origin(svc_date, tz),
     units = "secs"
   ))
   data.table::set(
     matched,
     j = "visit_rank",
-    value = pair_visits(matched$trip_ref, matched$stop_ref, observed_secs, base_seq)
+    value = pair_visits(
+      matched$trip_ref,
+      matched$stop_ref,
+      observed_secs,
+      list(
+        trip_ref = base_seq$trip_ref,
+        stop_ref = base_seq$stop_ref,
+        base_sequence = base_seq$base_sequence,
+        visit_rank = base_seq$visit_rank,
+        arrival_time = baseline_st$arrival_time,
+        departure_time = baseline_st$departure_time
+      )
+    )
   )
-  base_seq[, planned_secs := NULL]
   st <- merge(
     matched,
     base_seq,
