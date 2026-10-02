@@ -715,3 +715,52 @@ test_that("distinct visits at a repeated stop do not warn about ties", {
     events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
   ))
 })
+
+test_that("a numbered and an unnumbered visit tied on arrival never share a stop_sequence", {
+  # Planned A(1) 06:00, B(2), A(3) 06:03, C(4). Both observed A visits are
+  # stamped 06:03:00; one carries its stop_sequence, the other does not. The
+  # numbered one keeps its planned visit and the other takes the remaining one,
+  # whichever of the two the numbered event is and in either input order.
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  tied_events <- function(numbered_seq, numbered_dep, other_dep) {
+    ev <- synthetic_events("T1", "2026-07-22", c("A", "B", "A", "C"))
+    ev$arrival_time <- t0 + c(180, 90, 180, 270)
+    ev$departure_time <- t0 + c(numbered_dep, 110, other_dep, 290)
+    ev$stop_sequence <- c(numbered_seq, NA, NA, NA)
+    ev
+  }
+  cases <- list(
+    later_numbered = tied_events(3L, 200, 190),
+    earlier_numbered = tied_events(1L, 190, 200)
+  )
+  for (events in cases) {
+    for (rows in list(1:4, c(3L, 2L, 1L, 4L))) {
+      feed <- rt2s_assemble(
+        events[rows], baseline = baseline,
+        service_date = "2026-07-22", tz = "UTC"
+      )
+      st <- feed$stop_times
+      expect_identical(st$stop_sequence, 1:4)
+      expect_identical(st$stop_id, c("A", "B", "A", "C"))
+      expect_identical(nrow(duplicated_keys(st)), 0L)
+      # The visit that left first is the earlier one.
+      expect_identical(st$departure_time[c(1, 3)], c("06:03:10", "06:03:20"))
+    }
+  }
+})
+
+test_that("an output that repeats a (trip_id, stop_sequence) warns", {
+  # The B event claims stop_sequence 3, which the second A visit also has.
+  baseline <- synthetic_baseline("T1", c("A", "B", "A", "C"))
+  events <- synthetic_events(
+    "T1", "2026-07-22", c("A", "B", "A", "C"), stop_sequence = c(1L, 3L, 3L, 4L)
+  )
+  expect_warning(
+    feed <- rt2s_assemble(
+      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+    ),
+    "1 stop_times row\\(s\\) repeat the \\(trip_id, stop_sequence\\)"
+  )
+  expect_identical(nrow(duplicated_keys(feed$stop_times)), 1L)
+})

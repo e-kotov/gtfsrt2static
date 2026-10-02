@@ -462,8 +462,12 @@ n_tied_neighbours <- function(...) {
 # later ones fall through). A stop the trip serves several times pairs each
 # observed visit with the planned visit nearest in planned time, keeping both
 # in order, so an unobserved first visit does not shift the second visit onto
-# the first one's stop_sequence. Without usable times on either side the group
-# keeps observation order. Observation order is by `obs_secs`; visits tied on
+# the first one's stop_sequence. An event that carries the stop_sequence of
+# one of the planned visits takes that visit first: its output keeps its own
+# number, so pairing it elsewhere would hand that number to an unnumbered
+# event as well. The remaining events pair with the remaining planned visits
+# as above. Without usable times on either side they pair in observation
+# order. Observation order is by `obs_secs`; visits tied on
 # it are ordered by the event's own stop_sequence (`obs_seq`), then by
 # departure (`obs_dep`), and only then by input row, with a warning when a
 # repeated stop has visits tied on all three (duplicated events). Work is
@@ -500,16 +504,32 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
     n_tied <- n_tied + n_tied_neighbours(obs_secs[rows], obs_seq[rows], obs_dep[rows])
     plan <- plan_groups[[g]]
     plan <- plan[order(base$visit_rank[plan])]
+    own <- match(obs_seq[rows], base$base_sequence[plan])
+    own[duplicated(own, incomparables = NA)] <- NA_integer_
+    anchored <- !is.na(own)
+    if (any(anchored)) {
+      rank[rows[anchored]] <- base$visit_rank[plan[own[anchored]]]
+      plan <- plan[-own[anchored]]
+      rows <- rows[!anchored]
+      if (length(rows) == 0L) {
+        next
+      }
+    }
+    rank[rows] <- NA_integer_
+    if (length(plan) == 0L) {
+      next
+    }
     o <- obs_secs[rows]
     p <- psecs[plan]
     if (anyNA(o) || anyNA(p)) {
+      k <- seq_len(min(length(rows), length(plan)))
+      rank[rows[k]] <- base$visit_rank[plan[k]]
       next
     }
     if (length(o) <= length(p)) {
       rank[rows] <- base$visit_rank[plan][monotone_match(o, p)]
     } else {
       hit <- monotone_match(p, o)
-      rank[rows] <- NA_integer_
       rank[rows[hit]] <- base$visit_rank[plan]
     }
   }
@@ -571,10 +591,14 @@ drop_trips_before_origin <- function(served, tz) {
 #' \code{stop_sequence}. A planned row without times (a non-timepoint) is
 #' placed by linear interpolation over \code{stop_sequence}; only where a trip
 #' has fewer than two timed rows does the k-th observed visit take the k-th
-#' planned one. Observed visits are ordered by arrival; visits with the same
+#' planned one. An observed visit that carries the \code{stop_sequence} of one
+#' of the planned visits takes that visit before the others are paired.
+#' Observed visits are otherwise ordered by arrival; visits with the same
 #' arrival are ordered by their own \code{stop_sequence}, then by departure,
 #' and only then by input row, which warns (duplicated events are the usual
-#' cause). An observed visit without a planned
+#' cause). Output that still repeats a \code{(trip_id, stop_sequence)},
+#' because the events' own numbers disagree with the baseline's, warns too.
+#' An observed visit without a planned
 #' partner is numbered chronologically after the planned ones. The output
 #' therefore has exactly one row per observed event.
 #'
@@ -774,6 +798,15 @@ rt2s_assemble <- function(
   st[is.na(seq_final), seq_final := base_sequence]
   data.table::setorderv(st, c("trip_ref", "arrival_time"))
   st[is.na(seq_final), seq_final := seq_len(.N) + 10000L, by = trip_ref]
+  n_dup_seq <- sum(duplicated(st, by = c("trip_ref", "seq_final")))
+  if (n_dup_seq > 0L) {
+    warning(
+      n_dup_seq, " stop_times row(s) repeat the (trip_id, stop_sequence) of ",
+      "another row, which GTFS forbids. The events' own stop_sequence values ",
+      "disagree with the baseline's numbering; check them before publishing.",
+      call. = FALSE
+    )
+  }
 
   # Built outside `[`: inside a data.table bracket a local such as `svc_date`
   # or `tz` would resolve to an events column of the same name.

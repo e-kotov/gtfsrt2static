@@ -2,11 +2,14 @@
 
 ## Bug fixes
 
-* `rt2s_assemble()`: when two observed visits to a stop the trip serves more
-  than once have the same arrival time, the visit with the lower event
-  `stop_sequence`, then the earlier departure, now pairs with the earlier
-  planned visit. Input row order decides only when all three tie, and that
-  case warns, since it usually means duplicated events.
+* `rt2s_assemble()`: at a stop a trip serves more than once, an observed
+  visit that carries the `stop_sequence` of one of the planned visits now
+  takes that visit before the others are paired by time. Two visits with the
+  same arrival time, one numbered and one not, could both end up with the
+  same `stop_sequence`. Remaining arrival ties are broken by departure, then
+  by input row, which warns because it usually means duplicated events.
+  Output that still repeats a `(trip_id, stop_sequence)`, because the events'
+  own numbers disagree with the baseline, now warns.
 
 # gtfsrt2static 0.8.1
 
