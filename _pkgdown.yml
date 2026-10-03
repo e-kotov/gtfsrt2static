@@ -1,0 +1,75 @@
+url: https://e-kotov.github.io/gtfsrt2static/
+
+template:
+  bootstrap: 5
+  light-switch: true
+
+authors:
+  Egor Kotov:
+    href: "https://www.ekotov.pro"
+
+navbar:
+  structure:
+    left:  [intro, reference, articles, news]
+    right: [search, github, lightswitch]
+
+articles:
+  - title: "Workflows"
+    navbar: "Workflows"
+    contents:
+      - articles/pipeline
+      - frequency-feeds
+
+reference:
+  - title: "Collect"
+    desc: >
+      Archive ephemeral GTFS-Realtime endpoints as daily ZIPs of raw `.pb`
+      polls. The collector never parses protobuf.
+    contents:
+      - rt2s_collect
+      - rt2s_archive_rotate
+      - rt2s_archive_coverage
+      - rt2s_service_template
+  - title: "Events"
+    desc: >
+      Reduce Trip Updates or gps2gtfs stop times to the canonical observed
+      stop events table: one row per trip, stop and service date, with
+      provenance.
+    contents:
+      - rt2s_events_from_trip_updates
+      - rt2s_events_from_stop_times
+      - rt2s_events_validate
+  - title: "Summarise"
+    desc: >
+      Reduce many observed runs to headway, travel-time and dwell quantiles and
+      to a cross-trip stop order.
+    contents:
+      - rt2s_obs_headways
+      - rt2s_obs_travel_times
+      - rt2s_obs_stop_order
+      - rt2s_time_window
+  - title: "Baseline"
+    desc: >
+      Read a planned static feed: canonical stop patterns, scheduled headways,
+      and the dates a service runs.
+    contents:
+      - rt2s_baseline_patterns
+      - rt2s_baseline_headways
+      - rt2s_baseline_service_dates
+  - title: "Assemble"
+    desc: >
+      Merge events into a planned feed, scaffold a compliant feed from scratch,
+      or collapse many runs into frequency-based feeds.
+    contents:
+      - rt2s_assemble
+      - rt2s_scaffold
+      - rt2s_frequencies
+      - rt2s_resolved_grid
+  - title: "Concepts"
+    contents:
+      - observed-stop-events
+      - gtfsrt2static-package
+  - title: "Helpers"
+    contents:
+      - rt2s_publishable
+      - rt2s_monotone_offsets

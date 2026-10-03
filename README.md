@@ -1,5 +1,12 @@
 # gtfsrt2static
 
+<!-- badges: start -->
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
+[![pkgdown](https://github.com/e-kotov/gtfsrt2static/actions/workflows/pkgdown.yaml/badge.svg)](https://github.com/e-kotov/gtfsrt2static/actions/workflows/pkgdown.yaml)
+<!-- badges: end -->
+
+Website: <https://e-kotov.github.io/gtfsrt2static/>
+
 > **Experimental** — APIs will change without deprecation.
 
 Turn archived GTFS-Realtime feeds (and GPS-derived observations) into
@@ -79,92 +86,23 @@ route-directions that serve one of those stops. The same choice is available
 one level down as `rt2s_obs_headways(method = "passage")`, which is where
 `reference_stops` and `min_revisit_gap_s` are documented.
 
-### Anchoring on a planned feed
+Anchoring the frequency feeds on a planned feed (`pattern_source = "baseline"`,
+`scaling=`, `headways=`, `headway_groups=`, `service_dates=`) and mixing in
+individually-timed trips (`extra_trips=`) are covered in
+`vignette("frequency-feeds")`.
 
-The calls above *reconstruct* the stop pattern from the observations. When the
-operator publishes a usable feed, anchor on it instead: the stops and their order
-come from the timetable, and only a running-time ratio and a headway vary per
-route and window. Every scenario then emits an identical trip set, so a
-scheduled-versus-observed contrast measures service rather than network
-differences.
+## Learn more
 
-```r
-sched <- rt2s_baseline_headways(static, windows = windows)
-sched$scenario <- "scheduled"
-
-feeds <- rt2s_frequencies(
-  events,
-  windows = windows,
-  quantiles = list(
-    scheduled  = c(headway = 0.50),                 # travel side unused
-    structural = c(travel = 0.05, headway = 0.50),  # free-flow at typical frequency
-    median     = c(travel = 0.50, headway = 0.50),
-    reliable   = c(travel = 0.95, headway = 0.95)
-  ),
-  baseline = static,
-  pattern_source = "baseline",
-  scaling  = ratios,   # ratio per route/direction/window/scenario, yours to estimate
-  headways = sched
-)
-```
-
-`quantiles` accepts a list so travel time and headway can differ per scenario;
-a bare named numeric still applies one probability to both. See
-`vignette("frequency-feeds")` for the identity contract between `events` and the
-baseline.
-
-In this mode the pattern comes from `baseline`, the ratio from `scaling` and the
-headway from `headways`, so `events` contributes nothing to a
-`(route, direction, window)` **headway group**'s output. `headway_groups=` says
-so: it names the candidate groups directly, keyed `route_ref`, `direction_id`,
-`window`, and lets `events` be `NULL` entirely. Without it, a group with no
-observed runs is not a candidate and is absent from `rt2s_resolved_grid()` rather
-than flagged. Pair it with `service_dates=` — the feed still needs a calendar
-span, and `rt2s_baseline_service_dates()` expands one of the baseline's own
-services into a `Date` vector, `calendar_dates.txt` exceptions included.
-
-```r
-feeds <- rt2s_frequencies(
-  events = NULL,
-  windows = windows,
-  quantiles = list(scheduled = c(headway = 0.50), median = c(headway = 0.50)),
-  baseline = static,
-  pattern_source = "baseline",
-  service_dates  = rt2s_baseline_service_dates(static, "WEEKDAY"),
-  scaling  = ratios,
-  headways = sched,
-  headway_groups = unique(ratios[, c("route_ref", "direction_id", "window")])
-)
-```
-
-### Mixing in individually-timed trips
-
-Real service is not purely frequency-based. Per the GTFS specification only trips
-listed in `frequencies.txt` are frequency-based, and the rest are read from
-`stop_times` as exact scheduled times — so a headway group that cannot be
-written as a repeating headway is carried as an ordinary timed trip. Since a
-group with no resolvable headway is dropped, this is the only way to carry such
-service. `extra_trips=` takes
-those, keyed by scenario, with absolute clock times and no `frequencies.txt` row:
-
-```r
-feeds <- rt2s_frequencies(
-  events,
-  windows = windows,
-  stops   = stops_with_coords,
-  extra_trips = list(median = list(trips = my_trips, stop_times = my_stop_times))
-)
-```
-
-A scenario may supply more, fewer or no extra trips than another: exact-time
-evidence legitimately differs by scenario, so no cross-scenario invariant is
-imposed on them. They are not rows of `rt2s_resolved_grid()` — the grid is one
-row per candidate headway group — so reconcile `trips.txt` against the emitted
-groups plus the ids you supplied.
-
-See `vignette("frequency-feeds")` for the frequency workflow end to end. The
-opt-in validator test exercises representative frequency feeds with the
-MobilityData `gtfs-validator`.
+- [Get started](https://e-kotov.github.io/gtfsrt2static/articles/gtfsrt2static.html):
+  GTFS-Realtime Trip Updates to observed stop events to a scaffolded feed,
+  read back with `gtfstools`.
+- [From raw GPS to a realized GTFS feed](https://e-kotov.github.io/gtfsrt2static/articles/pipeline.html):
+  the end-to-end walkthrough across `gtfsrealtime`, `gps2gtfs`, this package
+  and `gtfstools`, in scaffold and baseline mode.
+- [Frequency-based feeds from observed service](https://e-kotov.github.io/gtfsrt2static/articles/frequency-feeds.html):
+  structural, median and reliable feeds; anchoring on a planned feed;
+  individually-timed trips; the resolved-grid audit.
+- [Function reference](https://e-kotov.github.io/gtfsrt2static/reference/index.html).
 
 ## Installation
 

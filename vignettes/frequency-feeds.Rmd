@@ -359,6 +359,12 @@ prediction-heavy single snapshot (fast-travel data-quality signals, an expired
 calendar). The resulting feeds are ordinary GTFS zips that `gtfstools`,
 `tidytransit`, and any other GTFS tool read directly.
 
+The package's own test suite runs the same validator, opt-in (set
+`GTFSRT2STATIC_RUN_VALIDATOR=1`; it needs Java), on representative frequency
+feeds: reconstructed from observations, anchored on a baseline, mixed with
+exact-time trips, with passage-based headways, driven by `headway_groups=`, and
+with `calendar_dates.txt` gaps. Each must have zero ERROR notices.
+
 ## Anchoring on a planned static feed
 
 Everything above **reconstructs** the stop pattern from the observations. That is

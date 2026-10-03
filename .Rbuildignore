@@ -3,3 +3,7 @@
 ^doc$
 ^Meta$
 ^tests/testthat/_problems$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^vignettes/articles$

@@ -1,0 +1,159 @@
+---
+title: "Get started with gtfsrt2static"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Get started with gtfsrt2static}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+has_deps <- requireNamespace("gtfsrealtime", quietly = TRUE) &&
+  requireNamespace("gtfstools", quietly = TRUE)
+knitr::opts_chunk$set(eval = has_deps)
+```
+
+`gtfsrt2static` turns observations of transit service (GTFS-Realtime Trip
+Updates, or stop times inferred from GPS by
+[`gps2gtfs`](https://e-kotov.github.io/gps2gtfs/)) into a static GTFS feed of
+the service that actually ran. This article takes one bundled snapshot of New
+York City bus Trip Updates through the whole path:
+
+1. read the protobuf with [`gtfsrealtime`](https://cran.r-project.org/package=gtfsrealtime);
+2. reduce it to *observed stop events*, the table every assembler consumes;
+3. check the events;
+4. scaffold a GTFS feed from them;
+5. write the feed and read it back with
+   [`gtfstools`](https://ipea.github.io/gtfstools/).
+
+```{r setup, eval = TRUE}
+library(gtfsrt2static)
+library(data.table)
+```
+
+## Read the Trip Updates
+
+`gtfsrealtime` parses GTFS-Realtime protobuf (single snapshots, compressed
+files, or a daily ZIP of archived polls) into one row per stop-time update.
+Pass the timezone the agency operates in. The reader warns about duplicate trip
+descriptors in this particular snapshot; those concern the source feed's
+identifiers, not the conversion, so we suppress them.
+
+```{r read}
+tu <- suppressWarnings(gtfsrealtime::read_gtfsrt_trip_updates(
+  system.file("nyc-trip-updates.pb.bz2", package = "gtfsrealtime"),
+  timezone = "America/New_York"
+))
+tu <- as.data.table(tu)
+dim(tu)
+
+tu <- tu[route_id == "M15"] # one Manhattan bus route keeps the example small
+tu[1:3, .(trip_id, route_id, stop_sequence, stop_id, arrival_time)]
+```
+
+## Reduce to observed stop events
+
+`rt2s_events_from_trip_updates()` keeps, for each trip, service date and stop
+visit, the latest report, and labels it `observed` when it was issued after the
+vehicle left the stop and `predicted-last` otherwise. Skipped stops and
+canceled trips become explicit rows. Both input paths of the package,
+Trip Updates and gps2gtfs stop times, end in this same table; see
+`?"observed-stop-events"` for its columns.
+
+```{r events}
+events <- rt2s_events_from_trip_updates(tu, tz = "America/New_York")
+events[1:3, .(trip_ref, route_ref, service_date, stop_ref, stop_sequence,
+              arrival_time, provenance)]
+table(events$provenance)
+```
+
+A single poll is *prediction-dominated*: most stops have not been passed yet,
+so they are labelled `predicted-last` rather than `observed`. An archive
+collected over the day with `rt2s_collect()` shifts that balance towards
+`observed`.
+
+## Check the events
+
+`rt2s_events_validate()` checks that a table conforms to the observed stop
+events schema and returns it, so it fits in a pipe; an error names the first
+violation. The converters and assemblers already call it, so run it yourself on
+events you build or modify by hand.
+
+```{r validate}
+events <- rt2s_events_validate(events)
+```
+
+## Scaffold a feed
+
+With no planned feed to inherit from, `rt2s_scaffold()` synthesizes every
+spec-required GTFS file, with linked identifiers. Two things cannot come from
+Trip Updates: agency metadata, which you supply, and stop coordinates, which
+live in the operator's static `stops.txt`.
+
+```{r scaffold}
+feed <- rt2s_scaffold(
+  events,
+  agency = list(
+    name = "MTA New York City Transit",
+    url = "https://www.mta.info",
+    timezone = "America/New_York"
+  )
+)
+names(feed)
+head(feed$stop_times)
+```
+
+The times are now GTFS clock strings on the service day's clock. Each feed
+carries its own publish gate. This one is not publishable yet, and says why:
+
+```{r publishable}
+rt2s_publishable(feed)
+```
+
+Pass a `stops` table (`stop_id`, `stop_lat`, `stop_lon`) taken from the static
+feed, and set `strict = TRUE` to turn any remaining gap into an error:
+
+```{r strict, eval = FALSE}
+static_stops <- gtfsio::import_gtfs("path/to/mta_static.zip")$stops
+feed <- rt2s_scaffold(
+  events,
+  agency = list(name = "MTA New York City Transit",
+                url = "https://www.mta.info", timezone = "America/New_York"),
+  stops = static_stops[, c("stop_id", "stop_lat", "stop_lon")],
+  strict = TRUE
+)
+```
+
+When you do have the operator's planned feed, use
+`rt2s_assemble(events, baseline = ...)` instead. The realized feed then keeps the
+official route, trip, stop and service identifiers, so planned and realized
+service join directly.
+
+## Write it and read it back
+
+The feed follows the [`gtfsio`](https://r-transit.github.io/gtfsio/)
+convention, so `gtfsio::export_gtfs()` writes a standard GTFS zip, and any GTFS
+tool reads it. Here `gtfstools` computes each trip's duration from the file:
+
+```{r export}
+path <- tempfile(fileext = ".zip")
+gtfsio::export_gtfs(feed, path)
+
+gtfs <- gtfstools::read_gtfs(path)
+head(gtfstools::get_trip_duration(gtfs, unit = "min"))
+```
+
+A trip that appears for a few minutes covers only the stops still ahead of the
+bus when the snapshot was taken.
+
+## Where next
+
+- [From raw GPS to a realized GTFS feed](https://e-kotov.github.io/gtfsrt2static/articles/pipeline.html): the same
+  assembly fed by `gps2gtfs` from vehicle trajectories, in both scaffold and
+  baseline mode, with a planned-versus-realized comparison.
+- `vignette("frequency-feeds")`: collapsing many observed runs into
+  frequency-based feeds at three reliability quantiles.

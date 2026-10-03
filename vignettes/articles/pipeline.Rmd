@@ -1,0 +1,326 @@
+---
+title: "From raw GPS to a realized GTFS feed"
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+pkgs <- c("gtfsrealtime", "gps2gtfs", "gtfsio", "gtfstools")
+has_deps <- all(vapply(pkgs, requireNamespace, logical(1), quietly = TRUE))
+knitr::opts_chunk$set(eval = has_deps)
+```
+
+This article follows transit observations from raw vehicle positions to a
+static GTFS feed of the service that actually ran, across four packages:
+
+| Step | Package | Functions |
+|---|---|---|
+| Parse GTFS-Realtime protobuf | [`gtfsrealtime`](https://cran.r-project.org/package=gtfsrealtime) | `read_gtfsrt_positions()` |
+| Infer trips and stop visits from coordinates | [`gps2gtfs`](https://e-kotov.github.io/gps2gtfs/) | `g2g_stops_from_gtfs()`, `g2g_terminals_from_gtfs()`, `g2g_extract_trips_and_stop_times()`, `g2g_shapes_from_trips()` |
+| Assemble a compliant feed | `gtfsrt2static` | `rt2s_events_from_stop_times()`, `rt2s_assemble()` |
+| Write, read and analyse GTFS | [`gtfsio`](https://r-transit.github.io/gtfsio/), [`gtfstools`](https://ipea.github.io/gtfstools/) | `export_gtfs()`, `read_gtfs()`, ... |
+
+The simple example scaffolds a feed from one day of a bus's GPS pings with no
+planned feed. The advanced example matches GTFS-Realtime positions to an
+operator's planned feed and compares planned with realized times.
+
+## Setup
+
+`gps2gtfs` is not on CRAN. Install it, and `gtfsrt2static`, from GitHub:
+
+```{r install, eval = FALSE}
+# install.packages("pak")
+pak::pak(c("e-kotov/gps2gtfs", "e-kotov/gtfsrt2static", "gtfsrealtime", "gtfstools"))
+```
+
+```{r setup}
+library(gps2gtfs)
+library(gtfsrt2static)
+library(data.table)
+```
+
+## Vehicle Positions are GPS pings
+
+GTFS-Realtime Vehicle Positions report where each vehicle is. `gtfsrealtime`
+parses them, here from one bundled snapshot of the New York City bus feed:
+
+```{r read-vp}
+vp <- gtfsrealtime::read_gtfsrt_positions(
+  system.file("nyc-vehicle-positions.pb.bz2", package = "gtfsrealtime"),
+  timezone = "America/New_York"
+)
+vp <- as.data.table(vp)
+vp[1:3, .(vehicle_id, trip_id, route_id, latitude, longitude, timestamp, speed)]
+```
+
+These are the column names `gps2gtfs` expects, so the reader's output goes into
+the extractor with no adapter. Columns it does not use, such as `trip_id`,
+`route_id` and `stop_id`, are passed through. This feed leaves `speed` empty.
+`gps2gtfs` detects dwell from pings with `speed == 0`, so with such a feed it
+warns and treats every ping as moving.
+
+One snapshot holds one ping per vehicle:
+
+```{r one-ping}
+nrow(vp)
+uniqueN(vp$vehicle_id)
+```
+
+A trajectory needs many polls of the same vehicle. Archive the endpoint over a
+day with `rt2s_collect()`, then read the daily ZIP with the same function. The
+examples below use trajectories that ship with `gps2gtfs` instead.
+
+## Simple example: scaffold a feed from GPS pings
+
+`gps2gtfs` bundles one day of GPS pings from a bus on route 654 between Kandy
+and Digana, Sri Lanka, with the route's stops and terminals. There is no
+planned GTFS feed for it.
+
+### Extract trips, stop visits and shapes
+
+```{r g2g-extract}
+result <- g2g_extract_trips_and_stop_times(
+  gps_data = g2g_data_gps,
+  terminals_data = g2g_data_terminals,
+  stops_data = g2g_data_stops,
+  terminals_buffer_radius = 50,
+  stops_buffer_radius = 30,
+  stops_extended_buffer_radius = 50,
+  stop_direction_map = c("Kandy-Digana" = "BT01", "Digana-Kandy" = "BT02"),
+  return_trajectory = TRUE,
+  diagnostics_warn = FALSE
+)
+result$trips[, .(trip_id, start_terminal, end_terminal, start_time, end_time)]
+
+shapes <- g2g_shapes_from_trips(result$trajectory)
+```
+
+The [gps2gtfs Get started](https://e-kotov.github.io/gps2gtfs/articles/gps2gtfs.html)
+article explains these arguments and the coverage diagnostics.
+
+### Convert to observed stop events
+
+`rt2s_events_from_stop_times()` turns the stop visits into the *observed stop
+events* table that every `gtfsrt2static` assembler consumes. `gps2gtfs` models
+one route per run, so the route identity is stamped on. `shape_ref_prefix`
+must match the `shape_id_prefix` of `g2g_shapes_from_trips()` (`"SHP_"` by
+default) so each trip links to its driven shape.
+
+```{r events-gps}
+events <- rt2s_events_from_stop_times(
+  result$stop_times,
+  route_ref = "654",
+  source = "gps",
+  shape_ref_prefix = "SHP_"
+)
+events[1:3, .(trip_ref, route_ref, shape_ref, service_date, stop_ref,
+              stop_sequence, arrival_time, provenance)]
+```
+
+Each trip has no official identifier, so it gets a synthetic one, unique
+across service dates.
+
+### Scaffold the feed
+
+With no planned feed, `rt2s_assemble()` scaffolds every required file. Agency
+metadata and stop coordinates must be supplied, and `strict = TRUE` makes any
+gap an error, so a feed that returns is free of known spec-required gaps. The
+bundled pings are stored in UTC, so UTC is the feed's timezone here; with real
+data, give the agency's own.
+
+```{r scaffold}
+stops <- data.frame(
+  stop_id = as.character(g2g_data_stops$stop_id),
+  stop_name = g2g_data_stops$address,
+  stop_lat = g2g_data_stops$latitude,
+  stop_lon = g2g_data_stops$longitude
+)
+
+feed <- rt2s_assemble(
+  events,
+  agency = list(name = "Route 654 demo", url = "https://example.org",
+                timezone = "UTC"),
+  stops = stops,
+  shapes = shapes,
+  strict = TRUE
+)
+names(feed)
+feed$trips[]
+rt2s_publishable(feed)$publishable
+```
+
+### Write it and analyse it with gtfstools
+
+```{r scaffold-export}
+path <- tempfile(fileext = ".zip")
+gtfsio::export_gtfs(feed, path)
+
+gtfs <- gtfstools::read_gtfs(path)
+merge(
+  gtfstools::get_trip_duration(gtfs, unit = "min"),
+  gtfstools::get_trip_speed(gtfs, unit = "km/h")[, .(trip_id, speed)],
+  by = "trip_id"
+)
+```
+
+`get_trip_speed()` measures each trip along its shape, which here is the road
+the bus actually drove. The same zip opens in
+[`tidytransit`](https://r-transit.github.io/tidytransit/) and other GTFS tools.
+
+## Advanced example: realized service against a planned feed
+
+When the operator publishes a planned feed, and the Vehicle Positions carry its
+`trip_id`, the realized feed can keep the official identifiers. It then joins
+directly to the planned feed. The example uses a small two-stop route, so that
+every step fits on screen.
+
+### The planned feed
+
+A planned feed with route `R1`, terminals `A` and `B`, two intermediate
+stops, and two trips: `CS_1` from A to B at 08:00, and `CS_2` back at 08:30.
+
+```{r planned}
+lat <- seq(7.290, 7.320, length.out = 4)
+lon <- seq(80.630, 80.660, length.out = 4)
+planned_times <- c("08:00:00", "08:04:00", "08:08:00", "08:12:00",
+                   "08:30:00", "08:34:00", "08:38:00", "08:42:00")
+
+planned <- gtfsio::new_gtfs(list(
+  agency = data.table(agency_id = "DT", agency_name = "Demo Transit",
+                      agency_url = "https://example.org",
+                      agency_timezone = "UTC"),
+  routes = data.table(route_id = "R1", agency_id = "DT",
+                      route_short_name = "1", route_type = 3L),
+  calendar = data.table(service_id = "daily",
+                        monday = 1L, tuesday = 1L, wednesday = 1L,
+                        thursday = 1L, friday = 1L, saturday = 1L,
+                        sunday = 1L,
+                        start_date = 20260601L, end_date = 20260630L),
+  stops = data.table(stop_id = c("A", "S1", "S2", "B"),
+                     stop_name = c("Terminal A", "Stop 1", "Stop 2",
+                                   "Terminal B"),
+                     stop_lat = lat, stop_lon = lon),
+  trips = data.table(route_id = "R1", service_id = "daily",
+                     trip_id = c("CS_1", "CS_2"), direction_id = 0:1),
+  stop_times = data.table(
+    trip_id = rep(c("CS_1", "CS_2"), each = 4),
+    arrival_time = planned_times,
+    departure_time = planned_times,
+    stop_id = c("A", "S1", "S2", "B", "B", "S2", "S1", "A"),
+    stop_sequence = rep(1:4, 2)
+  )
+))
+
+planned_zip <- tempfile(fileext = ".zip")
+gtfsio::export_gtfs(planned, planned_zip)
+```
+
+### Positions annotated with the planned trip
+
+These are the parsed Vehicle Positions of the bus on 6 June 2026, polled every
+five minutes: one run from A to B, a layover ping without a trip, and the run
+back. The `trip_id` column is what `read_gtfsrt_positions()` returns when the
+feed annotates positions with the planned trip.
+
+```{r positions}
+t0 <- as.POSIXct("2026-06-06 08:00:00", tz = "UTC")
+positions <- data.table(
+  vehicle_id = "7482",
+  latitude = c(lat, 7.321, rev(lat)),
+  longitude = c(lon, 80.661, rev(lon)),
+  timestamp = t0 + c(0, 300, 600, 900, 1200, 1800, 2100, 2400, 2700),
+  speed = c(0, 20, 20, 0, 0, 0, 20, 20, 0),
+  trip_id = c(rep("CS_1", 4), NA, rep("CS_2", 4))
+)
+```
+
+### Stops and terminals from the planned feed
+
+`gps2gtfs` derives both tables from the planned feed. The stops table holds
+the route's non-terminal stops, labelled by the terminal their direction
+starts from, so no direction map is needed:
+
+```{r stops-terminals}
+terminals <- g2g_terminals_from_gtfs(planned, route_id = "R1")
+stops <- g2g_stops_from_gtfs(planned, route_id = "R1")
+terminals
+stops
+```
+
+### Extract along the planned trips
+
+`trip_col = "trip_id"` takes the trips from the annotation instead of inferring
+them from terminal crossings (the *fast path*). The annotation is kept as
+`provided_trip_id`.
+
+```{r extract-fast}
+result <- g2g_extract_trips_and_stop_times(
+  gps_data = positions,
+  terminals_data = terminals,
+  stops_data = stops,
+  terminals_buffer_radius = 100,
+  stops_buffer_radius = 100,
+  stops_extended_buffer_radius = 150,
+  trip_col = "trip_id",
+  diagnostics_warn = FALSE
+)
+result$stop_times[, .(trip_id, provided_trip_id, stop_id, arrival_time)]
+```
+
+### Assemble against the baseline
+
+`rt2s_events_from_stop_times()` uses a `provided_trip_id` column as the trip
+identity when one is present. Given the planned feed as `baseline`,
+`rt2s_assemble()` keeps its agency, routes and stops, matches the observed
+trips by `trip_id`, and replaces `stop_times.txt` with the observed times for
+the service day:
+
+```{r baseline}
+events <- rt2s_events_from_stop_times(result$stop_times)
+unique(events$trip_ref)
+
+realized <- rt2s_assemble(events, baseline = planned_zip)
+realized$trips
+realized$stop_times
+```
+
+### Compare planned and realized
+
+Both feeds share trip and stop identifiers, so `gtfstools` reads both and a
+join gives the delay at each stop. Join on `trip_id` and `stop_id`, not on
+`stop_sequence`: for `gps2gtfs` input the realized `stop_sequence` counts the
+visits in observed order, while the planned one numbers every stop of the
+pattern, including the terminals. (In a loop that serves a stop twice, the
+stop alone does not identify the visit.)
+
+```{r compare}
+realized_zip <- tempfile(fileext = ".zip")
+gtfsio::export_gtfs(realized, realized_zip)
+
+secs <- function(path) {
+  g <- gtfstools::read_gtfs(path)
+  gtfstools::convert_time_to_seconds(g, file = "stop_times")$stop_times
+}
+comparison <- merge(
+  secs(planned_zip)[, .(trip_id, stop_id, planned = arrival_time_secs)],
+  secs(realized_zip)[, .(trip_id, stop_id, realized = arrival_time_secs)],
+  by = c("trip_id", "stop_id")
+)
+comparison[, delay_min := (realized - planned) / 60]
+comparison
+```
+
+Each run was one minute late at its first intermediate stop and two at its
+second.
+
+## Where next
+
+- `vignette("frequency-feeds", package = "gtfsrt2static")`: collapse many
+  observed runs into frequency-based feeds at three reliability quantiles, and
+  anchor them on a planned feed.
+- [GTFS-Realtime Vehicle Positions to GTFS](https://e-kotov.github.io/gps2gtfs/articles/gtfs-realtime.html):
+  the other ways `gps2gtfs` gets stops and terminals, from route geometry or
+  from the positions themselves.
+- `?"observed-stop-events"`: the table every input path converges on.
