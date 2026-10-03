@@ -614,25 +614,29 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
   rank
 }
 
-# Arrival time of each row, else its departure.
-observed_time <- function(x) {
-  t <- x$arrival_time
-  t[is.na(t)] <- x$departure_time[is.na(t)]
-  t
-}
-
-# Number of trips whose times decrease somewhere along stop_sequence.
-n_trips_backwards <- function(trip, sequence, time) {
+# Number of trips whose stop_times go backwards along stop_sequence, by the
+# rule GTFS validators apply: a row arrives (else departs) before the previous
+# row of its trip that has a time departs (else arrives). Rows without times
+# are skipped rather than compared, so they cannot hide a decrease. Times are
+# compared in whole seconds, as gtfs_clock() writes them.
+n_trips_backwards <- function(trip, sequence, arrival, departure) {
   o <- order(trip, sequence)
   trip <- trip[o]
-  time <- as.numeric(time[o])
+  arrive <- round(as.numeric(arrival[o]))
+  leave <- round(as.numeric(departure[o]))
+  arrive[is.na(arrive)] <- leave[is.na(arrive)]
+  leave[is.na(leave)] <- arrive[is.na(leave)]
   n <- length(trip)
   if (n < 2L) {
     return(0L)
   }
-  same_trip <- trip[-1L] == trip[-n]
-  back <- same_trip & !is.na(time[-1L]) & !is.na(time[-n]) & time[-1L] < time[-n]
-  length(unique(trip[-1L][back]))
+  # Index of the latest row so far that has a time: indices only grow, so a
+  # running maximum carries it across rows without one.
+  last <- cummax(ifelse(is.na(leave), 0L, seq_len(n)))
+  prev <- c(0L, last[-n])
+  back <- prev > 0L & !is.na(arrive)
+  back[back] <- trip[prev[back]] == trip[back] & arrive[back] < leave[prev[back]]
+  length(unique(trip[back]))
 }
 
 # Served events of trips with a time before their service day's GTFS origin
@@ -679,16 +683,23 @@ drop_trips_before_origin <- function(served, tz) {
 #' \itemize{
 #'   \item an observed visit that carries the \code{stop_sequence} of one of
 #'     the planned visits takes that visit;
-#'   \item any other visit may only take a planned visit whose
-#'     \code{stop_sequence} lies between those of the trip's stops observed
-#'     just before and just after it (stops the trip serves once, and visits
-#'     whose own number matches the plan), so it is never placed before a stop
-#'     it was observed after;
+#'   \item any other visit may only take a planned visit numbered above
+#'     every visit of the trip known to be observed before it and below every
+#'     one known to be observed after it. Known are the visits whose own
+#'     \code{stop_sequence} matches the plan and the first observed visit to
+#'     each stop the trip serves once; loop visits without their own number
+#'     bound nothing;
 #'   \item within those limits observed and planned visits pair in order, as
-#'     many as possible, each nearest in planned time, so a missed first pass
-#'     does not shift the second pass onto the first one's
-#'     \code{stop_sequence}.
+#'     many as possible, with the least total distance in planned time, so a
+#'     missed first pass does not shift the second pass onto the first one's
+#'     \code{stop_sequence}. An observed visit without a time comes after the
+#'     stop's timed visits in that order and is paired by the order alone.
 #' }
+#' Because the limits come from the observed visits, a spurious detection of
+#' a stop the trip serves once bounds the visits after it too and can leave a
+#' real loop visit without a planned partner, and an unnumbered loop visit
+#' can still be numbered before a stop it was observed after. Both put times
+#' out of order, which warns (below).
 #' A planned row without times (a non-timepoint) is placed by linear
 #' interpolation over \code{stop_sequence}; without planned times the pairs
 #' follow observation order. Observed visits are ordered by arrival; visits
@@ -696,9 +707,11 @@ drop_trips_before_origin <- function(served, tz) {
 #' by departure, and only then by input row, which warns (duplicated events
 #' are the usual cause). An observed visit without a planned partner is
 #' numbered chronologically after the planned ones, which can put it out of
-#' time order. Output that repeats a \code{(trip_id, stop_sequence)}, or whose
-#' times go backwards along \code{stop_sequence}, warns with the count. The output
-#' therefore has exactly one row per observed event.
+#' time order. Output that repeats a \code{(trip_id, stop_sequence)} warns
+#' with the count, and so does a trip in which a row arrives before the
+#' previous row with a time departs, which is the order GTFS validators check
+#' (rows without times are skipped, not compared). The output has exactly one
+#' row per observed event.
 #'
 #' This is the entry point to use when each observed run should stay its own
 #' trip. To collapse many runs into one representative trip per time window with
@@ -906,7 +919,9 @@ rt2s_assemble <- function(
       call. = FALSE
     )
   }
-  n_back <- n_trips_backwards(st$trip_ref, st$seq_final, observed_time(st))
+  n_back <- n_trips_backwards(
+    st$trip_ref, st$seq_final, st$arrival_time, st$departure_time
+  )
   if (n_back > 0L) {
     warning(
       n_back, " trip(s) have stop_times whose times go backwards along ",

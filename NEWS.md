@@ -6,19 +6,26 @@
   once (a loop) with planned visits under stricter rules:
   - A visit that carries the `stop_sequence` of one of the planned visits
     takes that visit.
-  - Any other visit may only take a planned visit numbered between the trip's
-    stops observed just before and just after it. A spurious extra
+  - Any other visit may only take a planned visit numbered above every visit
+    of the trip known to be observed before it and below every one known to
+    be observed after it (visits whose own `stop_sequence` matches the plan,
+    and the first visit to each stop the trip serves once). A spurious extra
     detection at a loop stop could previously take an unobserved planned
     visit and be numbered before a stop it was observed after, or share a
     `stop_sequence` with another visit. It now falls through to the numbering
     after the planned stops.
+  - Within those limits visits pair with the least total distance in planned
+    time. A visit without a time no longer puts the whole loop into
+    observation order: the timed visits pair by planned time, and a visit
+    without a time takes a planned visit after theirs.
   - Ties in arrival time are broken by the visit's own `stop_sequence`, then
     by departure, then by input row, which warns because it usually means
     duplicated events.
 
   `rt2s_assemble()` now warns when its output repeats a
-  `(trip_id, stop_sequence)` or when a trip's times go backwards along
-  `stop_sequence`.
+  `(trip_id, stop_sequence)`, or when a row arrives before the previous row
+  of its trip with a time departs (the order GTFS validators check; rows
+  without times are skipped, so they cannot hide it).
 
 # gtfsrt2static 0.8.1
 

@@ -652,17 +652,26 @@ test_that("visits tied on arrival at a repeated stop pair by departure, not inpu
   t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
   events$arrival_time <- t0 + c(180, 180, 270)
   events$departure_time <- t0 + c(220, 190, 290)
-  feed <- rt2s_assemble(
-    events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+  # Two visits stamped with one arrival cannot be in time order: the second
+  # arrives before the first departs, which warns.
+  backwards <- "1 trip\\(s\\) have stop_times whose times go backwards"
+  expect_warning(
+    feed <- rt2s_assemble(
+      events, baseline = baseline, service_date = "2026-07-22", tz = "UTC"
+    ),
+    backwards
   )
   st <- feed$stop_times
   expect_identical(st$stop_id, c("A", "A", "C"))
   expect_identical(st$stop_sequence, c(1L, 3L, 4L))
   expect_identical(st$departure_time[st$stop_id == "A"], c("06:03:10", "06:03:40"))
   # Reordering the input rows changes nothing.
-  feed2 <- rt2s_assemble(
-    events[c(2, 1, 3)], baseline = baseline,
-    service_date = "2026-07-22", tz = "UTC"
+  expect_warning(
+    feed2 <- rt2s_assemble(
+      events[c(2, 1, 3)], baseline = baseline,
+      service_date = "2026-07-22", tz = "UTC"
+    ),
+    backwards
   )
   expect_identical(feed2$stop_times, st)
 })
@@ -753,9 +762,13 @@ test_that("a numbered and an unnumbered visit tied on arrival never share a stop
   )
   for (events in cases) {
     for (rows in list(1:3, c(2L, 1L, 3L))) {
-      feed <- rt2s_assemble(
-        events[rows], baseline = baseline,
-        service_date = "2026-07-22", tz = "UTC"
+      # The second A arrives before the first departs, which warns.
+      expect_warning(
+        feed <- rt2s_assemble(
+          events[rows], baseline = baseline,
+          service_date = "2026-07-22", tz = "UTC"
+        ),
+        "1 trip\\(s\\) have stop_times whose times go backwards"
       )
       st <- feed$stop_times
       expect_identical(st$stop_sequence, c(1L, 3L, 4L))
@@ -847,4 +860,47 @@ test_that("numbers that contradict the observed times warn about backwards times
     ),
     "1 trip\\(s\\) have stop_times whose times go backwards"
   )
+})
+
+test_that("a row without times cannot hide times going backwards", {
+  backwards <- "1 trip\\(s\\) have stop_times whose times go backwards"
+  assemble <- function(events, pattern) {
+    collect_warnings(rt2s_assemble(
+      events, baseline = synthetic_baseline("T1", pattern),
+      service_date = "2026-07-22", tz = "UTC"
+    ))
+  }
+  t0 <- as.POSIXct("2026-07-22 06:00:00", tz = "UTC")
+  timed <- function(pattern, sequence, arrival, departure = arrival + 20) {
+    ev <- synthetic_events("T1", "2026-07-22", pattern, stop_sequence = sequence)
+    ev$arrival_time <- t0 + arrival
+    ev$departure_time <- t0 + departure
+    ev
+  }
+  # A at 06:05, B without times, C at 06:01:40: C runs backwards past B.
+  warned <- assemble(timed(c("A", "B", "C"), 1:3, c(300, NA, 100)), c("A", "B", "C"))
+  expect_identical(attr(warned, "value")$stop_times$stop_sequence, 1:3)
+  expect_true(any(grepl(backwards, warned)))
+  # Arrivals increase, but B arrives (06:00:30) before A departs (06:01:00).
+  warned <- assemble(
+    timed(c("A", "B", "C"), 1:3, c(0, 30, 180), c(60, 40, 200)),
+    c("A", "B", "C")
+  )
+  expect_true(any(grepl(backwards, warned)))
+  # In order with a row without times between: nothing warns.
+  warned <- assemble(timed(c("A", "B", "C"), 1:3, c(0, NA, 180)), c("A", "B", "C"))
+  expect_false(any(grepl(backwards, warned)))
+  # At a loop stop: the spurious A (06:03:25) falls back after a C without
+  # times, which sat between it and the C at 06:04:30.
+  events <- timed(
+    c("B", "A", "A", "C", "C"), c(2L, 3L, NA, 4L, NA),
+    c(90, 180, 205, 270, NA)
+  )
+  for (rows in list(1:5, 5:1)) {
+    warned <- assemble(events[rows], c("A", "B", "A", "C"))
+    st <- attr(warned, "value")$stop_times
+    expect_identical(st$stop_sequence, c(2L, 3L, 4L, 10001L, 10002L))
+    expect_identical(st$arrival_time, c("06:01:30", "06:03:00", "06:04:30", NA, "06:03:25"))
+    expect_true(any(grepl(backwards, warned)))
+  }
 })
