@@ -1,4 +1,4 @@
-# gtfsrt2static (development version)
+# gtfsrt2static 0.8.2
 
 ## Bug fixes
 
