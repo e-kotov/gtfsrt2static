@@ -515,14 +515,15 @@ n_tied_neighbours <- function(...) {
 #  - an event whose own stop_sequence names one of the planned visits takes
 #    that visit (its output keeps its own number, so pairing it elsewhere
 #    would hand that number to an unnumbered event as well);
-#  - every other event may only take a planned visit whose stop_sequence lies
-#    between those of the trip's visits observed just before and just after
-#    it (sequence_bounds(), from events whose number matches the plan and
-#    from first visits to stops served once), so a visit cannot be placed
-#    before a stop it was observed after;
+#  - every other event may only take a planned visit numbered above every
+#    earlier and below every later visit of the trip whose planned number is
+#    known (sequence_bounds(): events whose own number matches the plan, and
+#    unnumbered first visits to stops served once). Loop visits without their
+#    own number bound nothing, so order against them is not guaranteed;
 #  - within those bounds, events and planned visits pair in order, as many as
-#    possible, nearest in planned time (match_visits()). An event left without
-#    a partner falls through to the chronology fallback.
+#    possible, then with the least total distance in planned time
+#    (match_visits()). An event left without a partner falls through to the
+#    chronology fallback.
 # Observation order is by `obs_secs`; visits tied on it are ordered by the
 # event's own stop_sequence (`obs_seq`), then by departure (`obs_dep`), and
 # only then by input row, with a warning when a repeated stop has visits tied
@@ -552,8 +553,9 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
   )
 
   # Planned stop_sequence already known for the events of the timed trips: an
-  # event's own number where the plan has its stop there, else the number of
-  # a stop the trip serves once, for the first visit observed there.
+  # event's own number where the plan has its stop there; for an unnumbered
+  # first visit to a stop the trip serves once, that stop's number. Every
+  # other event stays unknown and bounds nothing.
   trip_rows <- which(trip %in% trip[obs_rows])
   pos <- match(
     paste(trip[trip_rows], obs_seq[trip_rows], sep = "\r"),
@@ -618,9 +620,12 @@ pair_visits <- function(trip, stop, obs_secs, base, obs_seq = NULL, obs_dep = NU
 # rule GTFS validators apply: a row arrives (else departs) before the previous
 # row of its trip that has a time departs (else arrives). Rows without times
 # are skipped rather than compared, so they cannot hide a decrease. Times are
-# compared in whole seconds, as gtfs_clock() writes them.
+# compared in whole seconds, as gtfs_clock() writes them. A row with only one
+# time uses it for both, which is stricter than the validator's check for
+# this (it rejects such rows under another rule). Trips sort by bytes, so ids
+# that collate as equal are not interleaved.
 n_trips_backwards <- function(trip, sequence, arrival, departure) {
-  o <- order(trip, sequence)
+  o <- order(trip, sequence, method = "radix")
   trip <- trip[o]
   arrive <- round(as.numeric(arrival[o]))
   leave <- round(as.numeric(departure[o]))
@@ -686,9 +691,9 @@ drop_trips_before_origin <- function(served, tz) {
 #'   \item any other visit may only take a planned visit numbered above
 #'     every visit of the trip known to be observed before it and below every
 #'     one known to be observed after it. Known are the visits whose own
-#'     \code{stop_sequence} matches the plan and the first observed visit to
-#'     each stop the trip serves once; loop visits without their own number
-#'     bound nothing;
+#'     \code{stop_sequence} matches the plan and, for each stop the trip
+#'     serves once, its first observed visit if that carries no
+#'     \code{stop_sequence}; other visits bound nothing;
 #'   \item within those limits observed and planned visits pair in order, as
 #'     many as possible, with the least total distance in planned time, so a
 #'     missed first pass does not shift the second pass onto the first one's
@@ -710,8 +715,9 @@ drop_trips_before_origin <- function(served, tz) {
 #' time order. Output that repeats a \code{(trip_id, stop_sequence)} warns
 #' with the count, and so does a trip in which a row arrives before the
 #' previous row with a time departs, which is the order GTFS validators check
-#' (rows without times are skipped, not compared). The output has exactly one
-#' row per observed event.
+#' (rows without times are skipped, not compared; a row with only one time
+#' uses it for both, which validators reject under another rule). The output
+#' has exactly one row per observed event.
 #'
 #' This is the entry point to use when each observed run should stay its own
 #' trip. To collapse many runs into one representative trip per time window with

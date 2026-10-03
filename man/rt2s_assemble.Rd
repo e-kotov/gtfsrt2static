@@ -65,9 +65,9 @@ the planned visits takes that visit;
 \item any other visit may only take a planned visit numbered above
 every visit of the trip known to be observed before it and below every
 one known to be observed after it. Known are the visits whose own
-\code{stop_sequence} matches the plan and the first observed visit to
-each stop the trip serves once; loop visits without their own number
-bound nothing;
+\code{stop_sequence} matches the plan and, for each stop the trip
+serves once, its first observed visit if that carries no
+\code{stop_sequence}; other visits bound nothing;
 \item within those limits observed and planned visits pair in order, as
 many as possible, with the least total distance in planned time, so a
 missed first pass does not shift the second pass onto the first one's
@@ -89,8 +89,9 @@ numbered chronologically after the planned ones, which can put it out of
 time order. Output that repeats a \code{(trip_id, stop_sequence)} warns
 with the count, and so does a trip in which a row arrives before the
 previous row with a time departs, which is the order GTFS validators check
-(rows without times are skipped, not compared). The output has exactly one
-row per observed event.
+(rows without times are skipped, not compared; a row with only one time
+uses it for both, which validators reject under another rule). The output
+has exactly one row per observed event.
 
 This is the entry point to use when each observed run should stay its own
 trip. To collapse many runs into one representative trip per time window with
