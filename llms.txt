@@ -1,0 +1,228 @@
+# gtfsrt2static
+
+Website: <https://e-kotov.github.io/gtfsrt2static/>
+
+> **Experimental** — APIs will change without deprecation.
+
+Turn archived GTFS-Realtime feeds (and GPS-derived observations) into
+**standard-compliant static GTFS snapshots of the service that actually
+ran**, ready for comparison against the planned schedule.
+
+## How it fits together
+
+    live endpoints ──rt2s_collect()──► daily .pb ZIPs
+                                         │
+          Trip Updates ──(gtfsrealtime)──┴──► rt2s_events_from_trip_updates() ──┐
+                                                                             ├─► observed stop events ─► rt2s_assemble() ─► realized GTFS zip
+          Vehicle Positions / raw GPS ──(gps2gtfs)─► rt2s_events_from_stop_times() ─┘        (baseline feed optional)
+
+- [`gtfsrealtime`](https://cran.r-project.org/package=gtfsrealtime)
+  parses GTFS-RT protobuf into data frames (not this package’s job).
+- [`gps2gtfs`](https://github.com/e-kotov/gps2gtfs) infers trips and
+  stop times from raw coordinates (not this package’s job either).
+- **This package** does everything that is neither protobuf nor spatial:
+  collecting feeds, converging both input paths on a canonical *observed
+  stop events* table, and assembling compliant feeds.
+
+## Modules
+
+| Module | Functions | Job |
+|----|----|----|
+| collect | [`rt2s_collect()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_collect.md), [`rt2s_archive_rotate()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_archive_rotate.md), [`rt2s_archive_coverage()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_archive_coverage.md), [`rt2s_service_template()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_service_template.md) | archive ephemeral GTFS-RT endpoints as daily `.pb` ZIPs (never parses; raw bytes only) |
+| events | [`rt2s_events_from_trip_updates()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_trip_updates.md), [`rt2s_events_from_stop_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_stop_times.md), [`rt2s_events_validate()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_validate.md) | reduce observations to one row per trip × stop × service date, with provenance |
+| summarise | [`rt2s_obs_headways()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_headways.md), [`rt2s_obs_travel_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_travel_times.md), [`rt2s_obs_stop_order()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_stop_order.md), [`rt2s_time_window()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_time_window.md) | reduce many observed runs to headway / travel-time / dwell quantiles and a cross-trip canonical stop order |
+| baseline | [`rt2s_baseline_patterns()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_patterns.md), [`rt2s_baseline_headways()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_headways.md), [`rt2s_baseline_service_dates()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_service_dates.md) | reduce a *planned* static feed to one canonical stop pattern per route-direction, to its own scheduled headways, and to the dates a named service runs |
+| assemble | [`rt2s_assemble()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_assemble.md), [`rt2s_scaffold()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_scaffold.md), [`rt2s_frequencies()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_frequencies.md), [`rt2s_resolved_grid()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_resolved_grid.md) | merge events into a baseline feed (official IDs preserved), scaffold a compliant feed from scratch, or collapse many runs into a frequency-based feed — and read back which headway groups were emitted, with what, and why the rest were dropped |
+
+## Quick example
+
+``` r
+
+library(gtfsrt2static)
+
+# Trip Updates archive -> realized feed for one day
+updates <- gtfsrealtime::read_gtfsrt_trip_updates("tu/20260714.zip", "America/New_York")
+events  <- rt2s_events_from_trip_updates(updates)
+feed    <- rt2s_assemble(events, baseline = "planned_gtfs.zip")
+gtfsio::export_gtfs(feed, "realized_20260714.zip")
+
+# Vehicle Positions (no Trip Updates, no baseline)
+positions <- gtfsrealtime::read_gtfsrt_positions("vp/20260714.zip", "America/New_York")
+result <- gps2gtfs::g2g_extract_trips_and_stop_times(positions, terminals, stops, ...)
+events <- rt2s_events_from_stop_times(result$stop_times)
+feed   <- rt2s_assemble(
+  events,
+  agency = list(name = "My Agency", url = "https://...", timezone = "America/New_York"),
+  stops  = gps2gtfs::g2g_stops_from_positions(positions)
+)
+
+# Collapse many runs into a frequency-based feed at three reliability quantiles
+feeds <- rt2s_frequencies(
+  events,
+  windows = list(am_peak = c("06:00", "09:00"), midday = c("09:00", "16:00")),
+  stops   = stops_with_coords,
+  agency  = list(name = "My Agency", url = "https://...", timezone = "America/New_York")
+)
+feeds$structural; feeds$median; feeds$reliable   # p05 / p50 / p95 feeds
+
+# If trip_ref is not per-run, estimate headways from reference-stop passages
+feeds <- rt2s_frequencies(
+  events,
+  windows = list(am_peak = c("06:00", "09:00"), midday = c("09:00", "16:00")),
+  stops   = stops_with_coords,
+  agency  = list(name = "My Agency", url = "https://...", timezone = "America/New_York"),
+  headway_method = "passage"
+)
+```
+
+Supplying `reference_stops` restricts passage-headway output to
+route-directions that serve one of those stops. The same choice is
+available one level down as `rt2s_obs_headways(method = "passage")`,
+which is where `reference_stops` and `min_revisit_gap_s` are documented.
+
+Anchoring the frequency feeds on a planned feed
+(`pattern_source = "baseline"`, `scaling=`, `headways=`,
+`headway_groups=`, `service_dates=`) and mixing in individually-timed
+trips (`extra_trips=`) are covered in
+[`vignette("frequency-feeds")`](https://e-kotov.github.io/gtfsrt2static/articles/frequency-feeds.md).
+
+## Learn more
+
+- [Get
+  started](https://e-kotov.github.io/gtfsrt2static/articles/gtfsrt2static.html):
+  GTFS-Realtime Trip Updates to observed stop events to a scaffolded
+  feed, read back with `gtfstools`.
+- [From raw GPS to a realized GTFS
+  feed](https://e-kotov.github.io/gtfsrt2static/articles/pipeline.html):
+  the end-to-end walkthrough across `gtfsrealtime`, `gps2gtfs`, this
+  package and `gtfstools`, in scaffold and baseline mode.
+- [Frequency-based feeds from observed
+  service](https://e-kotov.github.io/gtfsrt2static/articles/frequency-feeds.html):
+  structural, median and reliable feeds; anchoring on a planned feed;
+  individually-timed trips; the resolved-grid audit.
+- [Function
+  reference](https://e-kotov.github.io/gtfsrt2static/reference/index.html).
+
+## Installation
+
+``` r
+
+# install.packages("pak")
+pak::pak("e-kotov/gtfsrt2static")
+```
+
+## Design notes
+
+- Both input paths converge on the **observed stop events** schema
+  ([`?"observed-stop-events"`](https://e-kotov.github.io/gtfsrt2static/reference/observed-stop-events.md)):
+  trip × stop × service date × actual times × provenance (`observed` /
+  `predicted-last` / `propagated` / `skipped` / `canceled`).
+- Times are absolute `POSIXct` internally; `stop_times.txt` clock
+  strings (including `>24:00:00` for post-midnight stops) are derived
+  only at assembly.
+- The collector never parses protobuf: archive fidelity must not depend
+  on parser versions, and malformed responses are evidence worth
+  keeping.
+- Output follows the [gtfsio](https://r-transit.github.io/gtfsio/)
+  convention, so [gtfstools](https://ipea.github.io/gtfstools/) and
+  [tidytransit](https://r-transit.github.io/tidytransit/) work on it
+  directly.
+
+## License
+
+MIT © Egor Kotov
+
+# Package index
+
+## Collect
+
+Archive ephemeral GTFS-Realtime endpoints as daily ZIPs of raw `.pb`
+polls. The collector never parses protobuf.
+
+- [`rt2s_collect()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_collect.md)
+  : Continuously Archive GTFS-Realtime Feeds
+- [`rt2s_archive_rotate()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_archive_rotate.md)
+  : Roll Finished Archive Days into Daily ZIPs
+- [`rt2s_archive_coverage()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_archive_coverage.md)
+  : Archive Coverage and Gap Report
+- [`rt2s_service_template()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_service_template.md)
+  : Generate a Supervised-Service Template for the Collector
+
+## Events
+
+Reduce Trip Updates or gps2gtfs stop times to the canonical observed
+stop events table: one row per trip, stop and service date, with
+provenance.
+
+- [`rt2s_events_from_trip_updates()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_trip_updates.md)
+  : Observed Stop Events from GTFS-Realtime Trip Updates
+- [`rt2s_events_from_stop_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_stop_times.md)
+  : Observed Stop Events from gps2gtfs Stop Times
+- [`rt2s_events_validate()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_validate.md)
+  : Validate an Observed Stop Events Table
+
+## Summarise
+
+Reduce many observed runs to headway, travel-time and dwell quantiles
+and to a cross-trip stop order.
+
+- [`rt2s_obs_headways()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_headways.md)
+  : Observed Headways per Route-Direction and Time Window
+- [`rt2s_obs_travel_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_travel_times.md)
+  : Observed Travel-Time and Dwell Quantiles per Stop
+- [`rt2s_obs_stop_order()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_stop_order.md)
+  : Cross-Trip Canonical Stop Order for Each Route-Direction
+- [`rt2s_time_window()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_time_window.md)
+  : Classify Times of Day into Named Service Windows
+
+## Baseline
+
+Read a planned static feed: canonical stop patterns, scheduled headways,
+and the dates a service runs.
+
+- [`rt2s_baseline_patterns()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_patterns.md)
+  : Canonical Published Stop Pattern per Route-Direction
+- [`rt2s_baseline_headways()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_headways.md)
+  : Planned Headways per Route-Direction and Time Window
+- [`rt2s_baseline_service_dates()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_service_dates.md)
+  : Service Dates of a Named Baseline Service
+
+## Assemble
+
+Merge events into a planned feed, scaffold a compliant feed from
+scratch, or collapse many runs into frequency-based feeds.
+
+- [`rt2s_assemble()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_assemble.md)
+  : Assemble a Realized GTFS Feed from Observed Stop Events
+- [`rt2s_scaffold()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_scaffold.md)
+  : Scaffold a Standard-Compliant GTFS Feed from Observed Stop Events
+- [`rt2s_frequencies()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_frequencies.md)
+  : Assemble Frequency-Based Realized GTFS Feeds (One per Reliability
+  Quantile)
+- [`rt2s_resolved_grid()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_resolved_grid.md)
+  : Resolved Headway-Group Grid Behind a Frequency Feed Set
+
+## Concepts
+
+- [`observed-stop-events`](https://e-kotov.github.io/gtfsrt2static/reference/observed-stop-events.md)
+  : The Observed Stop Events Schema
+- [`gtfsrt2static`](https://e-kotov.github.io/gtfsrt2static/reference/gtfsrt2static-package.md)
+  [`gtfsrt2static-package`](https://e-kotov.github.io/gtfsrt2static/reference/gtfsrt2static-package.md)
+  : gtfsrt2static: Realized Static GTFS Snapshots from GTFS-Realtime and
+  GPS-Derived Observations
+
+## Helpers
+
+- [`rt2s_publishable()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_publishable.md)
+  : Publish-Readiness of an Assembled Feed
+- [`rt2s_monotone_offsets()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_monotone_offsets.md)
+  : Make Stop-Time Offsets Monotone
+
+# Articles
+
+### Workflows
+
+- [From raw GPS to a realized GTFS
+  feed](https://e-kotov.github.io/gtfsrt2static/articles/pipeline.md):
+- [Frequency-based feeds from observed
+  service](https://e-kotov.github.io/gtfsrt2static/articles/frequency-feeds.md):

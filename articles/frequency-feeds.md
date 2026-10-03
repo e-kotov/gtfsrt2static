@@ -1,0 +1,642 @@
+# Frequency-based feeds from observed service
+
+Most of `gtfsrt2static` assembles **stop-times-based** feeds: one row
+per observed stop event, preserving every run.
+[`rt2s_frequencies()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_frequencies.md)
+does the opposite. It collapses *many* observed runs of a
+route-direction into a compact, **frequency-based** schedule — one
+representative trip per time window plus a `frequencies.txt` headway —
+and emits one feed per reliability quantile:
+
+- **structural** (p05): a free-flow lower bound,
+- **median** (p50): a typical day,
+- **reliable** (p95): a slow, worst-case upper bound.
+
+By default the same quantile is applied to *both* travel time and
+headway, so the reliable feed is slower and less frequent than the
+structural one. This is the shape you want for accessibility and
+reliability analysis, where you compare routing under optimistic,
+typical, and pessimistic service.
+
+That default is a convenience, not a constraint. Passing a *list*
+instead of a numeric vector decouples the two sides, which matters as
+soon as a scenario is not simply “everything optimistic”: a free-flow
+running time at a *typical* frequency is a common estimand, and coupling
+would drag a p05 headway along with the p05 travel time.
+
+``` r
+
+quantiles = list(
+  structural = c(travel = 0.05, headway = 0.50),  # free-flow, typical frequency
+  median     = 0.50,                              # still coupled - shorthand
+  reliable   = 0.95
+)
+```
+
+An omitted side inherits the one you gave, so `c(headway = 0.5)` is
+legal for a scenario whose travel times do not come from an observed
+quantile at all — see the anchored section at the end.
+
+``` r
+
+library(gtfsrt2static)
+library(data.table)
+#> 
+#> Attaching package: 'data.table'
+#> The following object is masked from 'package:base':
+#> 
+#>     %notin%
+```
+
+## The input: observed stop events
+
+Every assembler in this package consumes the canonical *observed stop
+events* table (see
+[`?"observed-stop-events"`](https://e-kotov.github.io/gtfsrt2static/reference/observed-stop-events.md)):
+one row per trip × stop × service date, with absolute `POSIXct`
+arrival/departure times and a `provenance` label. You get it from
+[`rt2s_events_from_trip_updates()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_trip_updates.md)
+(GTFS-Realtime Trip Updates) or
+[`rt2s_events_from_stop_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_stop_times.md)
+(gps2gtfs-derived stop times). For a first, self-contained look we build
+a tiny one by hand: one route, six runs across a morning peak, four
+stops, with per-run variation so the quantiles differ.
+
+``` r
+
+base_date <- as.Date("2026-05-06") # a Wednesday
+starts <- as.POSIXct(
+  paste(base_date, c("07:00", "07:12", "07:25", "07:41", "08:02", "08:20")),
+  tz = "UTC"
+) # rising headways: 12, 13, 16, 21, 18 min
+stops <- c("A1", "A2", "A3", "A4")
+nominal <- c(0, 300, 720, 1080) # seconds from trip start
+spread <- c(0, 40, -30, 90, 20, -20) # per-run travel-time noise
+
+events <- rbindlist(lapply(seq_along(starts), function(i) {
+  off <- nominal + c(0, 1, 2, 3) * spread[i] # later stops accumulate spread
+  data.frame(
+    trip_ref = paste0("run", i), route_ref = "A", shape_ref = NA_character_,
+    direction_id = 0L, service_date = base_date,
+    stop_ref = stops, stop_sequence = NA_integer_,
+    arrival_time = starts[i] + off,
+    departure_time = starts[i] + off + 20,
+    provenance = "observed", vehicle_ref = paste0("veh", i),
+    source = "gps", stringsAsFactors = FALSE
+  )
+}))
+head(events)
+#>    trip_ref route_ref shape_ref direction_id service_date stop_ref
+#>      <char>    <char>    <char>        <int>       <Date>   <char>
+#> 1:     run1         A      <NA>            0   2026-05-06       A1
+#> 2:     run1         A      <NA>            0   2026-05-06       A2
+#> 3:     run1         A      <NA>            0   2026-05-06       A3
+#> 4:     run1         A      <NA>            0   2026-05-06       A4
+#> 5:     run2         A      <NA>            0   2026-05-06       A1
+#> 6:     run2         A      <NA>            0   2026-05-06       A2
+#>    stop_sequence        arrival_time      departure_time provenance vehicle_ref
+#>            <int>              <POSc>              <POSc>     <char>      <char>
+#> 1:            NA 2026-05-06 07:00:00 2026-05-06 07:00:20   observed        veh1
+#> 2:            NA 2026-05-06 07:05:00 2026-05-06 07:05:20   observed        veh1
+#> 3:            NA 2026-05-06 07:12:00 2026-05-06 07:12:20   observed        veh1
+#> 4:            NA 2026-05-06 07:18:00 2026-05-06 07:18:20   observed        veh1
+#> 5:            NA 2026-05-06 07:12:00 2026-05-06 07:12:20   observed        veh2
+#> 6:            NA 2026-05-06 07:17:40 2026-05-06 07:18:00   observed        veh2
+#>    source
+#>    <char>
+#> 1:    gps
+#> 2:    gps
+#> 3:    gps
+#> 4:    gps
+#> 5:    gps
+#> 6:    gps
+```
+
+## Assembling the feeds
+
+[`rt2s_frequencies()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_frequencies.md)
+needs the events, a **windows** definition (a frequency feed is
+organised by time window), and — to be publishable — an `agency` and a
+`stops` table with coordinates. `strict = TRUE` turns missing
+agency/coordinate warnings into errors, acting as a publish gate.
+
+``` r
+
+stops_tbl <- data.frame(
+  stop_id = stops,
+  stop_lat = c(40.70, 40.71, 40.72, 40.73),
+  stop_lon = c(-73.99, -73.98, -73.97, -73.96)
+)
+
+feeds <- rt2s_frequencies(
+  events,
+  windows = list(am_peak = c("07:00", "09:00")),
+  stops = stops_tbl,
+  agency = list(name = "Demo Transit", url = "https://example.org", timezone = "UTC"),
+  strict = TRUE
+)
+#> [INFO] route_type not given; scaffolding routes as 3 (bus).
+names(feeds)
+#> [1] "structural" "median"     "reliable"
+```
+
+You get a named list of `gtfsio`-convention feed objects, one per
+quantile. Each is a standard GTFS feed you write with
+[`gtfsio::export_gtfs()`](https://r-transit.github.io/gtfsio/reference/export_gtfs.html).
+
+The `frequencies.txt` carries the observed headway for the window, per
+quantile:
+
+``` r
+
+feeds$structural$frequencies
+#>        trip_id start_time end_time headway_secs exact_times
+#>         <char>     <char>   <char>        <int>       <int>
+#> 1: A_0_am_peak   07:00:00 09:00:00          732           0
+feeds$reliable$frequencies
+#>        trip_id start_time end_time headway_secs exact_times
+#>         <char>     <char>   <char>        <int>       <int>
+#> 1: A_0_am_peak   07:00:00 09:00:00         1224           0
+```
+
+The representative `stop_times` are **offsets from a `00:00:00` trip
+start** (the `exact_times = 0` convention: only relative offsets
+matter), clamped non-decreasing so arrivals never go backwards along the
+trip:
+
+``` r
+
+feeds$median$stop_times
+#>        trip_id arrival_time departure_time stop_id stop_sequence
+#>         <char>       <char>         <char>  <char>         <int>
+#> 1: A_0_am_peak     00:00:00       00:00:20      A1             1
+#> 2: A_0_am_peak     00:05:10       00:05:30      A2             2
+#> 3: A_0_am_peak     00:12:20       00:12:40      A3             3
+#> 4: A_0_am_peak     00:18:30       00:18:50      A4             4
+```
+
+The three feeds order as you’d expect — the reliable trip takes longer
+to reach its last stop, and runs at a longer headway, than the
+structural one:
+
+``` r
+
+clock_secs <- function(x) {
+  p <- tstrsplit(x, ":", fixed = TRUE)
+  as.integer(p[[1]]) * 3600L + as.integer(p[[2]]) * 60L + as.integer(p[[3]])
+}
+last_arrival <- sapply(feeds, function(f) {
+  max(clock_secs(f$stop_times$arrival_time))
+})
+headway <- sapply(feeds, function(f) f$frequencies$headway_secs)
+data.frame(scenario = names(feeds), last_arrival_secs = last_arrival, headway_secs = headway)
+#>              scenario last_arrival_secs headway_secs
+#> structural structural               997          732
+#> median         median              1110          960
+#> reliable     reliable              1312         1224
+```
+
+Each feed also carries a programmatic publish gate —
+[`rt2s_publishable()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_publishable.md)
+reads the `publishable` / `publish_blockers` attributes stamped on it:
+
+``` r
+
+rt2s_publishable(feeds$median)$publishable
+#> [1] TRUE
+```
+
+## What the feeds were built from
+
+The feeds tell you what was written; they do not tell you what was
+*considered* and left out.
+[`rt2s_resolved_grid()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_resolved_grid.md)
+does — one row per candidate `(route_ref, direction_id, window)` and
+scenario:
+
+``` r
+
+grid <- rt2s_resolved_grid(feeds)
+grid
+#> Key: <trip_id>
+#>    route_ref direction_id  window   scenario     trip_id ratio headway_secs
+#>       <char>        <int>  <char>     <char>      <char> <num>        <int>
+#> 1:         A            0 am_peak     median A_0_am_peak    NA          960
+#> 2:         A            0 am_peak   reliable A_0_am_peak    NA         1224
+#> 3:         A            0 am_peak structural A_0_am_peak    NA          732
+#>    headway_source emitted drop_reason
+#>            <char>  <lgcl>      <char>
+#> 1:       observed    TRUE        <NA>
+#> 2:       observed    TRUE        <NA>
+#> 3:       observed    TRUE        <NA>
+```
+
+`ratio` is the running-time ratio applied (`NA` here, because an
+observed pattern carries its own travel-time quantile and no ratio
+exists); `headway_secs` is the headway actually written to
+`frequencies.txt` and `headway_source` says whether it came from the
+observations or from a `headways=` override; `emitted` is whether the
+trip reached that scenario’s `trips.txt`; and `drop_reason` explains the
+groups that did not.
+
+This exists so a pipeline can reconcile its own accounting against the
+feed. The grid is built from the candidate set captured **before** any
+drop stage runs, so its row count does not change as groups fall out —
+which is what makes a stage-by-stage funnel check possible:
+
+``` r
+
+# every candidate headway group is accounted for, in every scenario
+table(grid$scenario, grid$drop_reason, useNA = "ifany")
+#>             
+#>              <NA>
+#>   median        1
+#>   reliable      1
+#>   structural    1
+
+# and the emitted rows match what was actually written -- these feeds were built
+# without extra_trips=, so the grid accounts for every row of trips.txt
+identical(
+  sort(grid[scenario == "median" & emitted == TRUE]$trip_id),
+  sort(feeds$median$trips$trip_id)
+)
+#> [1] TRUE
+```
+
+That last identity holds **because no `extra_trips` were passed**. The
+grid has one row per candidate `(route, direction, window)` headway
+group, and individually-timed trips are not groups; if you add them,
+reconcile against
+`c(grid[emitted == TRUE]$trip_id, <the ids you supplied>)` instead. The
+next section shows that.
+
+A headway group is dropped for one of three reasons, reported in
+pipeline order. `"no_stop_pattern"` means it had no served (or, when
+anchoring, no baseline) stop pattern. `"no_ratio"` means
+`scaling_missing = "drop"` removed it. `"no_headway"` means no headway
+could be resolved for it — no observed quantile and no `headways=`
+override. The last two remove it from *every* scenario, so the feeds
+keep one shared trip set (see the anchored section below).
+
+`"no_headway"` is a drop rather than a trip written without a
+`frequencies.txt` row, and that matters: per GTFS a trip absent from
+`frequencies.txt` is read as exact-time, so emitting one whose
+`stop_times` are offsets from `00:00:00` would advertise a departure at
+midnight that never runs. An emitted row therefore always carries a
+positive `headway_secs`. Service that cannot be written as a repeating
+headway belongs in `extra_trips=`, below.
+
+## Mixing in individually-timed trips
+
+Real service is not purely frequency-based. Some headway groups cannot
+honestly be written as one representative trip plus a repeating headway
+— an hour with three irregular departures, a peak extra, a group whose
+evidence is a handful of exact passages rather than a rhythm. GTFS
+handles this directly: **only trips listed in `frequencies.txt` are
+frequency-based**, and every other trip is read from `stop_times` as
+exact scheduled times. A feed may contain both.
+
+`extra_trips=` is how you supply the second kind. It takes a named list
+keyed by scenario — the same names as `quantiles`, so a misspelled
+scenario is an error rather than a silent no-op — each element a
+`list(trips=, stop_times=)` whose times are **absolute clock strings**,
+not offsets from `00:00:00`:
+
+``` r
+
+# the inverse of clock_secs() above: seconds since midnight -> "HH:MM:SS"
+secs_clock <- function(s) {
+  sprintf("%02d:%02d:%02d", s %/% 3600, (s %% 3600) %/% 60, s %% 60)
+}
+
+extra <- list(
+  trips = data.frame(
+    route_id = "A", trip_id = c("A_exact_1", "A_exact_2"), direction_id = 0L
+  ),
+  stop_times = rbindlist(lapply(c("A_exact_1", "A_exact_2"), function(id) {
+    start <- if (id == "A_exact_1") 8 * 3600 + 2100 else 8 * 3600 + 3300
+    off <- c(0, 300, 720, 1080)
+    data.frame(
+      trip_id = id,
+      arrival_time = secs_clock(start + off),
+      departure_time = secs_clock(start + off + 20),
+      stop_id = stops,
+      stop_sequence = seq_along(stops)
+    )
+  }))
+)
+
+mixed <- rt2s_frequencies(
+  events,
+  windows = list(am_peak = c("07:00", "09:00")),
+  stops = stops_tbl,
+  agency = list(name = "Demo Transit", url = "https://example.org", timezone = "UTC"),
+  strict = TRUE,
+  # the two late departures are only defensible for the median scenario here
+  extra_trips = list(median = extra)
+)
+#> [INFO] route_type not given; scaffolding routes as 3 (bus).
+mixed$median$trips
+#>    route_id service_id     trip_id direction_id
+#>      <char>     <char>      <char>        <int>
+#> 1:        A       SVC1 A_0_am_peak            0
+#> 2:        A       SVC1   A_exact_1            0
+#> 3:        A       SVC1   A_exact_2            0
+```
+
+The extra trips are in `trips.txt` and `stop_times.txt`, and
+deliberately **not** in `frequencies.txt` — that absence is what makes
+them exact-time trips:
+
+``` r
+
+mixed$median$frequencies
+#>        trip_id start_time end_time headway_secs exact_times
+#>         <char>     <char>   <char>        <int>       <int>
+#> 1: A_0_am_peak   07:00:00 09:00:00          960           0
+```
+
+Three properties worth knowing:
+
+- **Their stops and routes are added to `stops.txt` and `routes.txt`**,
+  but every `stop_id` must already be known (from `stops`, or from an
+  emitted pattern) and every `route_id` must be an emitted or baseline
+  route. A dangling reference is an invalid feed, so it is rejected
+  rather than filled in with a placeholder — the lenient
+  missing-coordinates path exists for observed data with genuinely
+  unknown positions, not for a typo in a table you supplied.
+- **No cross-scenario invariant is imposed.** A scenario may supply
+  more, fewer or no extra trips than another. Exact-time evidence
+  legitimately differs by scenario — a scheduled scenario draws it from
+  the timetable while the others draw it from observed passages — so
+  requiring matching id sets would reject correct data. The
+  shared-trip-set guarantee stays scoped to the *generated* frequency
+  trips, where `scaling_missing` enforces it.
+- **They are not rows of
+  [`rt2s_resolved_grid()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_resolved_grid.md).**
+  The grid is one row per candidate headway group; extra trips are not
+  groups, and adding them would produce rows whose `route_ref`,
+  `window`, `ratio`, `headway_secs` and `drop_reason` are all `NA`.
+  Since you supplied the trips, you already own their ids, so the funnel
+  still closes:
+
+``` r
+
+mixed_grid <- rt2s_resolved_grid(mixed)
+identical(
+  sort(c(
+    mixed_grid[scenario == "median" & emitted == TRUE]$trip_id,
+    extra$trips$trip_id
+  )),
+  sort(mixed$median$trips$trip_id)
+)
+#> [1] TRUE
+```
+
+## From a real GTFS-Realtime feed
+
+In practice the events come from a real feed. Here is the exact same
+pipeline on a bundled snapshot of New York City MTA Trip Updates (via
+the `gtfsrealtime` package) — no manual preprocessing beyond selecting a
+few routes. The reader emits warnings about duplicate trip descriptors
+in this particular snapshot; those concern the source feed’s
+identifiers, not the conversion, so we suppress them here.
+
+``` r
+
+tu <- suppressWarnings(gtfsrealtime::read_gtfsrt_trip_updates(
+  system.file("nyc-trip-updates.pb.bz2", package = "gtfsrealtime"),
+  timezone = "America/New_York"
+))
+tu <- as.data.table(tu)
+tu <- tu[route_id %in% c("M1", "M3", "M4")] # a small Manhattan slice
+
+events_nyc <- rt2s_events_from_trip_updates(tu, tz = "America/New_York")
+table(events_nyc$provenance)
+#> 
+#>       observed predicted-last 
+#>             23           3604
+```
+
+A single poll is *prediction-dominated* — most stops have not been
+passed yet, so they are labelled `predicted-last` rather than
+`observed`; an archive collected over time (see
+[`rt2s_collect()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_collect.md))
+shifts that balance. The frequency assembly treats both as timed
+passages.
+
+Assembling frequency feeds is identical to the synthetic case. Supplying
+an `agency` clears the agency blocker; the only remaining blocker is
+stop coordinates, which live in the operator’s *static* GTFS
+`stops.txt`:
+
+``` r
+
+feeds_nyc <- rt2s_frequencies(
+  events_nyc,
+  windows = list(pm_peak = c("16:00", "19:00"), evening = c("19:00", "22:00")),
+  agency = list(name = "MTA New York City Transit",
+                url = "https://www.mta.info", timezone = "America/New_York"),
+  strict = FALSE # no coordinates yet -> a non-publishable analysis feed
+)
+#> Warning: 311 stop(s) have no coordinates (spec-required stop_lat/stop_lon are
+#> NA). Supply 'stops' - e.g. estimated from Vehicle Positions with
+#> gps2gtfs::g2g_stops_from_positions() - before publishing.
+#> [INFO] route_type not given; scaffolding routes as 3 (bus).
+rt2s_publishable(feeds_nyc$median)$publishable
+#> [1] FALSE
+rt2s_publishable(feeds_nyc$median)$blockers
+#> [1] "311 stop(s) missing spec-required coordinates"
+```
+
+To make it publishable, pass a `stops` data frame (`stop_id` /
+`stop_lat` / `stop_lon`) read from the static feed, exactly as in the
+synthetic example:
+
+``` r
+
+stops <- gtfsio::import_gtfs("path/to/mta_static.zip")$stops
+feeds_nyc <- rt2s_frequencies(
+  events_nyc,
+  windows = list(pm_peak = c("16:00", "19:00"), evening = c("19:00", "22:00")),
+  stops = stops[, c("stop_id", "stop_lat", "stop_lon")],
+  agency = list(name = "MTA New York City Transit",
+                url = "https://www.mta.info", timezone = "America/New_York"),
+  strict = TRUE
+)
+```
+
+Run on a coordinate-complete 25-route Manhattan slice (537 trips), all
+three feeds pass the MobilityData `gtfs-validator` (v6.0.0) with **zero
+ERROR notices**; the residual notices are the WARNINGs expected for a
+historical, prediction-heavy single snapshot (fast-travel data-quality
+signals, an expired calendar). The resulting feeds are ordinary GTFS
+zips that `gtfstools`, `tidytransit`, and any other GTFS tool read
+directly.
+
+The package’s own test suite runs the same validator, opt-in (set
+`GTFSRT2STATIC_RUN_VALIDATOR=1`; it needs Java), on representative
+frequency feeds: reconstructed from observations, anchored on a
+baseline, mixed with exact-time trips, with passage-based headways,
+driven by `headway_groups=`, and with `calendar_dates.txt` gaps. Each
+must have zero ERROR notices.
+
+## Anchoring on a planned static feed
+
+Everything above **reconstructs** the stop pattern from the
+observations. That is right when no usable published pattern exists. But
+it has a consequence worth being explicit about: because the stops and
+their order are derived from what was observed, two feeds built from
+different observations can differ in their *networks*, not just their
+service levels. If you then compare accessibility between a scheduled
+and an observed feed, “service got slower” is confounded with “the
+network changed”.
+
+When the operator does publish a usable feed, anchor on it instead. Set
+`pattern_source = "baseline"` and the stop pattern comes from the
+published `stop_times` — one canonical (modal) pattern per
+route-direction, chosen by
+[`rt2s_baseline_patterns()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_patterns.md)
+— with only two numbers varying per route and window: a **running-time
+ratio** and a **headway**. Every scenario then emits the identical trip
+set over the identical stops.
+
+``` r
+
+static <- gtfsio::import_gtfs("path/to/operator_static.zip")
+windows <- list(am_peak = c("06:00", "09:00"), interpeak = c("09:00", "16:00"))
+
+# Running-time ratios you estimated yourself: observed duration relative to
+# planned, per route, direction, window and scenario. The package does not
+# estimate these - the definition of "duration", the coverage gates and any
+# plausibility bounds belong with whoever measured them.
+ratios <- data.frame(
+  route_ref = "B62", direction_id = 0L, window = "am_peak",
+  scenario = c("scheduled", "structural", "median", "reliable"),
+  ratio = c(1.00, 0.87, 1.05, 1.31)
+)
+
+# The "scheduled" scenario's frequency comes from the timetable itself, not from
+# observations, so take it off the planned feed and inject it as an override.
+sched <- rt2s_baseline_headways(static, windows = windows)
+sched$scenario <- "scheduled"
+
+feeds <- rt2s_frequencies(
+  events,
+  windows = windows,
+  quantiles = list(
+    scheduled  = c(headway = 0.50),                 # travel side unused here
+    structural = c(travel = 0.05, headway = 0.50),
+    median     = c(travel = 0.50, headway = 0.50),
+    reliable   = c(travel = 0.95, headway = 0.95)
+  ),
+  baseline = static,
+  pattern_source = "baseline",
+  scaling = ratios,
+  headways = sched
+)
+```
+
+Three things to know about this mode:
+
+- **`events` is optional here.** Only the pattern source changes, so by
+  default headways, the calendar’s weekdays and the feed’s date range
+  still come from the observations — but see the next section, which
+  drives candidacy from the baseline instead.
+- **The travel side of `quantiles` is inert.** The pattern is the
+  published one scaled by `ratio`, so
+  [`rt2s_obs_travel_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_obs_travel_times.md)
+  is never called. `quantiles` still defines *which* scenarios exist —
+  it stays the single source of scenario identity, and
+  `scaling`/`headways` may only refer to its names.
+- **The trip set is shared by construction.** Ratios are resolved for
+  the whole (trip × scenario) grid before any feed is built, so a
+  headway group missing a ratio leaves *every* scenario rather than just
+  the one that lacks it. That is what `scaling_missing` controls, and
+  why its default is to error rather than quietly produce feeds you
+  cannot compare. Headways are resolved in the same place and for the
+  same reason. Under `scaling_missing = "drop"` the removed groups stay
+  visible in
+  [`rt2s_resolved_grid()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_resolved_grid.md)
+  with `drop_reason = "no_ratio"`, so a drop is something you can audit
+  rather than something you have to notice.
+
+The identity contract is the thing to get right: the `route_ref` of
+`events` and of `headway_groups` must carry the same identifier as the
+baseline’s `trips.route_id` (or `routes.route_short_name`, via
+`route_key`), and `direction_id` must agree. A completely disjoint key
+set is an error naming examples from both sides.
+
+One incidental advantage: a route that visits the same stop twice (a
+loop, or a branch that doubles back) is handled correctly here, because
+the pattern is a literal published trip. The reconstructing path
+collapses repeated visits into one position and warns about it.
+
+## Driving candidacy from the baseline, not from the observations
+
+There is one more gate in the anchored mode above, and it is easy to
+miss: the candidate `(route, direction, window)` **headway groups** are
+still derived from `events`. A group with no observed runs is not a
+candidate, so it is absent from
+[`rt2s_resolved_grid()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_resolved_grid.md)
+entirely rather than present with a `drop_reason` — and the feed is
+quietly smaller than the network it claims to describe.
+
+That is the wrong gate for an anchored feed. The pattern comes from
+`baseline`, the ratio from `scaling`, the headway from `headways`;
+`events` contributes nothing to such a group’s output. It is a real
+regime, not a corner case: a pipeline may estimate a per-group headway
+and running-time ratio from round-trip spans for its whole network while
+producing package-format stop events for only a handful of lines.
+
+`headway_groups=` names the candidates directly. It takes the
+`scaling`/`headways` key **minus `scenario`**, because candidacy is a
+property of the group and not of the scenario, and candidacy becomes the
+events-derived groups *union* the ones you supply:
+
+``` r
+
+groups <- unique(ratios[, c("route_ref", "direction_id", "window")])
+
+feeds <- rt2s_frequencies(
+  events = NULL,                       # no observations at all
+  windows = windows,
+  quantiles = list(scheduled = c(headway = 0.50), median = c(headway = 0.50)),
+  baseline = static,
+  pattern_source = "baseline",
+  service_dates = rt2s_baseline_service_dates(static, "WEEKDAY"),
+  scaling = ratios,
+  headways = sched,
+  headway_groups = groups
+)
+```
+
+Four things this changes:
+
+- **`events` may be `NULL`.** No headway analytics run at all, so
+  *every* headway must come from `headways=`. `events = NULL` without
+  `headway_groups=` is an error — there would be nothing to build from.
+- **The service span needs a source.** `calendar.txt` is normally
+  derived from `events$service_date`, which no longer exists.
+  `service_dates=` supplies it.
+  [`rt2s_baseline_service_dates()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_baseline_service_dates.md)
+  expands one of the baseline’s own services into a `Date` vector,
+  honouring `calendar.txt` *and* `calendar_dates.txt` exceptions. It is
+  a separate, explicit call on purpose: the assembler never silently
+  inherits `baseline$calendar`, because a planned calendar describes
+  planned service while the emitted feed describes what you are
+  asserting.
+- **A supplied group with no baseline pattern is not an error.** It
+  warns and appears in the grid with `drop_reason = "no_stop_pattern"`,
+  which is exactly the visibility this argument exists to restore.
+- **`headway_groups=` is baseline-only.** Under
+  `pattern_source = "observed"` it is an error, because an observed
+  pattern can only be reconstructed for a group that has events.
+
+`service_dates=` is worth passing even when you do have events. A span
+reduced to weekday flags plus a first and last date cannot express a
+hole, so a working set of daily files with two days missing would
+otherwise claim service on those two days. Any date inside `[min, max]`
+whose weekday *is* served but which is absent from `service_dates` is
+written to `calendar_dates.txt` with `exception_type = 2`; a date set
+with no holes emits no `calendar_dates.txt` at all.
