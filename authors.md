@@ -8,7 +8,7 @@
 ## Citation
 
 Source:
-[`DESCRIPTION`](https://github.com/e-kotov/gtfsrt2static/blob/main/DESCRIPTION)
+[`DESCRIPTION`](https://github.com/e-kotov/gtfsrt2static/blob/v0.8.3/DESCRIPTION)
 
 Kotov E (2026). *gtfsrt2static: Realized Static GTFS Snapshots from
 GTFS-Realtime and GPS-Derived Observations*. R package version 0.8.3,
