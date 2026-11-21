@@ -1,3 +1,10 @@
+# gtfsrt2static 0.8.3
+
+* Added tests for GTFS times after `24:00:00` across both daylight saving time
+  changes. The tests check conversion in both directions. The package already
+  handled these times correctly.
+* Added a Get started guide and a guide for using both packages together.
+
 # gtfsrt2static 0.8.2
 
 ## Bug fixes
