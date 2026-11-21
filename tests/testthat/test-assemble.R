@@ -532,6 +532,50 @@ test_that("clock strings and visit pairing use the GTFS origin on daylight-savin
   }
 })
 
+test_that("Berlin trip updates and assembly preserve service-day times across DST", {
+  tz <- "Europe/Berlin"
+  # GTFS Schedule Reference (Time): elapsed seconds from local noon minus
+  # 12 hours. Berlin switches at 01:00 UTC on 29 March and 25 October 2026.
+  # The three service-day origins are 23:00, 22:00 and 23:00 UTC on their
+  # preceding dates, respectively. Keep both occurrences of 02:30 explicit.
+  cases <- data.frame(
+    day = c("2026-03-28", "2026-10-24", "2026-10-25"),
+    clock = c("27:00:00", "26:30:00", "02:30:00"),
+    utc = c("2026-03-29 02:00:00", "2026-10-25 00:30:00", "2026-10-25 01:30:00"),
+    local = c("2026-03-29 04:00:00 +0200", "2026-10-25 02:30:00 +0200",
+              "2026-10-25 02:30:00 +0100")
+  )
+  for (i in seq_len(nrow(cases))) {
+    case <- cases[i, ]
+    day <- as.Date(case$day)
+    instant <- as.POSIXct(case$utc, tz = "UTC")
+    observation <- .POSIXct(as.numeric(instant), tz = tz)
+    baseline <- synthetic_baseline("T1", "A")
+    baseline$agency$agency_timezone <- tz
+    baseline$stop_times$arrival_time <- case$clock
+    baseline$stop_times$departure_time <- case$clock
+
+    updates <- data.frame(
+      trip_id = "T1", start_date = format(day, "%Y%m%d"),
+      stop_id = "A", stop_sequence = 1L,
+      arrival_delay = 0, departure_delay = 0, file_timestamp = observation + 60
+    )
+    decoded <- rt2s_events_from_trip_updates(updates, baseline = baseline, tz = tz)
+    expect_identical(decoded$service_date, day)
+    for (time in list(decoded$arrival_time, decoded$departure_time)) {
+      expect_identical(as.numeric(time), as.numeric(instant))
+      expect_identical(format(time, "%Y-%m-%d %H:%M:%S %z", tz = tz), case$local)
+    }
+
+    # Supply an independent UTC observation so inverse errors cannot cancel.
+    events <- synthetic_events("T1", case$day, "A", stop_sequence = 1L)
+    events$arrival_time <- events$departure_time <- observation
+    feed <- rt2s_assemble(events, baseline = baseline, service_date = day)
+    expect_identical(feed$stop_times$arrival_time, case$clock)
+    expect_identical(feed$stop_times$departure_time, case$clock)
+  }
+})
+
 test_that("a trip before the GTFS origin of a fall-back day is dropped, not fatal", {
   baseline <- synthetic_baseline(c("T0", "T1"), c("A", "B"))
   baseline$agency$agency_timezone <- "Europe/Berlin"
