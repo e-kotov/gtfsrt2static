@@ -11,13 +11,13 @@ Source:
 [`DESCRIPTION`](https://github.com/e-kotov/gtfsrt2static/blob/main/DESCRIPTION)
 
 Kotov E (2026). *gtfsrt2static: Realized Static GTFS Snapshots from
-GTFS-Realtime and GPS-Derived Observations*. R package version 0.8.2,
+GTFS-Realtime and GPS-Derived Observations*. R package version 0.8.3,
 <https://e-kotov.github.io/gtfsrt2static/>.
 
     @Manual{,
       title = {gtfsrt2static: Realized Static GTFS Snapshots from GTFS-Realtime and GPS-Derived Observations},
       author = {Egor Kotov},
       year = {2026},
-      note = {R package version 0.8.2},
+      note = {R package version 0.8.3},
       url = {https://e-kotov.github.io/gtfsrt2static/},
     }

@@ -7,7 +7,7 @@ packages:
 | Step | Package | Functions |
 |----|----|----|
 | Parse GTFS-Realtime protobuf | [`gtfsrealtime`](https://cran.r-project.org/package=gtfsrealtime) | `read_gtfsrt_positions()` |
-| Infer trips and stop visits from coordinates | [`gps2gtfs`](https://e-kotov.github.io/gps2gtfs/) | [`g2g_stops_from_gtfs()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_stops_from_gtfs.html), [`g2g_terminals_from_gtfs()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_terminals_from_gtfs.html), [`g2g_extract_trips_and_stop_times()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_extract_trips_and_stop_times.html), [`g2g_shapes_from_trips()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_shapes_from_trips.html) |
+| Infer trips and stop visits from coordinates | [`gps2gtfs`](https://e-kotov.github.io/gps2gtfs/) | [`g2g_stops_from_gtfs()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_stops_from_gtfs.html), [`g2g_terminals_from_gtfs()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_terminals_from_gtfs.html), [`g2g_extract_trips_and_stop_times()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_extract_trips_and_stop_times.html), [`g2g_shapes_from_trips()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_shapes_from_trips.html) |
 | Assemble a compliant feed | `gtfsrt2static` | [`rt2s_events_from_stop_times()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_events_from_stop_times.md), [`rt2s_assemble()`](https://e-kotov.github.io/gtfsrt2static/reference/rt2s_assemble.md) |
 | Write, read and analyse GTFS | [`gtfsio`](https://r-transit.github.io/gtfsio/), [`gtfstools`](https://ipea.github.io/gtfstools/) | `export_gtfs()`, `read_gtfs()`, … |
 
@@ -136,7 +136,7 @@ turns the stop visits into the *observed stop events* table that every
 `gtfsrt2static` assembler consumes. `gps2gtfs` models one route per run,
 so the route identity is stamped on. `shape_ref_prefix` must match the
 `shape_id_prefix` of
-[`g2g_shapes_from_trips()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_shapes_from_trips.html)
+[`g2g_shapes_from_trips()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_shapes_from_trips.html)
 (`"SHP_"` by default) so each trip links to its driven shape.
 
 ``` r
@@ -225,12 +225,12 @@ merge(
 #> Key: <trip_id>
 #>           trip_id duration    speed
 #>            <char>    <num>    <num>
-#> 1: g2g_20220701_1 35.08333 27.08431
-#> 2: g2g_20220701_2 44.40000 21.69604
-#> 3: g2g_20220701_3 45.88333 20.88370
-#> 4: g2g_20220701_4 45.66667 21.14421
-#> 5: g2g_20220701_5 44.05000 21.83688
-#> 6: g2g_20220701_6 56.61667 17.04455
+#> 1: g2g_20220701_1 35.08333 21.00028
+#> 2: g2g_20220701_2 44.40000 18.46930
+#> 3: g2g_20220701_3 45.88333 17.64803
+#> 4: g2g_20220701_4 45.66667 17.95699
+#> 5: g2g_20220701_5 44.05000 18.44588
+#> 6: g2g_20220701_6 56.61667 14.50765
 ```
 
 `get_trip_speed()` measures each trip along its shape, which here is the

@@ -1,7 +1,7 @@
 # Observed Stop Events from gps2gtfs Stop Times
 
 Converts the `$stop_times` table produced by
-[`gps2gtfs::g2g_extract_trips_and_stop_times()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_extract_trips_and_stop_times.html)
+[`gps2gtfs::g2g_extract_trips_and_stop_times()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_extract_trips_and_stop_times.html)
 into observed stop events (see
 [observed-stop-events](https://e-kotov.github.io/gtfsrt2static/reference/observed-stop-events.md)).
 
@@ -68,7 +68,7 @@ rt2s_events_from_stop_times(
   Optional character prefix for populating `shape_ref` from the internal
   `trip_id`, as `<prefix><trip_id>`. Set it to the `shape_id_prefix`
   used with
-  [`gps2gtfs::g2g_shapes_from_trips()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_shapes_from_trips.html)
+  [`gps2gtfs::g2g_shapes_from_trips()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_shapes_from_trips.html)
   (default there `"SHP_"`) so the assembler can link `trips.shape_id` to
   those shapes. `NULL` (default) leaves `shape_ref` as NA (no shape
   linkage).

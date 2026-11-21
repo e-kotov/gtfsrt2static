@@ -1,5 +1,13 @@
 # Changelog
 
+## gtfsrt2static 0.8.3
+
+- Added tests for GTFS times after `24:00:00` across both daylight
+  saving time changes. The tests check conversion in both directions.
+  The package already handled these times correctly.
+- Added a Get started guide and a guide for using both packages
+  together.
+
 ## gtfsrt2static 0.8.2
 
 ### Bug fixes
@@ -658,7 +666,7 @@ Initial development version.
     reading warnings.
   - `shapes` are linked to `trips.shape_id` via the events’ `shape_ref`
     (set by `snapshot_from_stop_times(shape_ref_prefix=)` to match
-    [`gps2gtfs::g2g_shapes_from_trips()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_shapes_from_trips.html));
+    [`gps2gtfs::g2g_shapes_from_trips()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_shapes_from_trips.html));
     unreferenced shapes are pruned and dangling references warn (or
     error under `strict`).
   - `feed_lang` (default `"en"`) and optional `feed_contact_email` /

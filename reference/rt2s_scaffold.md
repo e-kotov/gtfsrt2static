@@ -51,7 +51,7 @@ rt2s_scaffold(
 - shapes:
 
   Optional `shapes.txt`-shaped table (e.g. from
-  [`gps2gtfs::g2g_shapes_from_trips()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_shapes_from_trips.html)).
+  [`gps2gtfs::g2g_shapes_from_trips()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_shapes_from_trips.html)).
   Linked to trips via `trips.shape_id` when the events carry a matching
   `shape_ref` (see `rt2s_events_from_stop_times(shape_ref_prefix=)`);
   shapes not referenced by any trip are dropped, and references without
@@ -93,5 +93,5 @@ data.tables) - write it with
 What cannot come from GTFS-RT and must be supplied (or is filled with a
 flagged placeholder): agency name/url/timezone (spec-required), stop
 coordinates (`stops` argument, e.g. from
-[`gps2gtfs::g2g_stops_from_positions()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_stops_from_positions.html)),
+[`gps2gtfs::g2g_stops_from_positions()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_stops_from_positions.html)),
 and `route_type` (defaults to 3, bus, with a warning).

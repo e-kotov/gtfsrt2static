@@ -24,7 +24,7 @@ Columns:
   Shape identity linking the trip to `shapes.txt`, NA when unknown. Set
   by `rt2s_events_from_stop_times(shape_ref_prefix=)` to match the ids
   produced by
-  [`gps2gtfs::g2g_shapes_from_trips()`](https://rdrr.io/pkg/gps2gtfs/man/g2g_shapes_from_trips.html);
+  [`gps2gtfs::g2g_shapes_from_trips()`](https://e-kotov.github.io/gps2gtfs/reference/g2g_shapes_from_trips.html);
   the assembler writes it to `trips.shape_id`.
 
 - direction_id:
